@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@google/genai": "gemini-3.5-flash-lite",
+    "@google/genai": "^0.1.2",
     "@whiskeysockets/baileys": "^6.7.12",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
