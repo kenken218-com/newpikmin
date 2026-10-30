@@ -313,9 +313,8 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
     return data.choices[0]?.message?.content || '';
 }
 
-// 🧠 具備 Google 即時搜尋功能的 AI 聊天處理
 async function processAIChat(sock, remoteJid, senderName, query, messageObj) {
-    console.log(`🚀 [AI 聊天啟動 (含即時搜尋)] 收到來自 ${senderName} 的提問: "${query}"`);
+    console.log(`🚀 [AI 聊天啟動] 收到來自 ${senderName} 的提問: "${query}"`);
     await recordCafeMessage(senderName, 'user', query);
 
     const userTraits = cafeMemory.userProfiles[senderName] || [];
@@ -334,6 +333,7 @@ ${historyText}
 
     let replyText = '';
     try {
+        // 🛠️ 修正這裡的 API 呼叫格式，使其完美支援 Google Search 與最新 GoogleGenAI SDK
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash-lite',
             contents: fullPrompt,
@@ -344,7 +344,7 @@ ${historyText}
         });
         replyText = response.text;
     } catch (err1) {
-        console.warn('⚠️ Gemini AI (帶搜尋) 失敗，切換至 OpenRouter Gemma 4 31B 備用線路...', err1.message);
+        console.warn('⚠️ Gemini AI 失敗，切換至 OpenRouter Gemma 4 31B 備用線路...', err1.message);
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
@@ -479,7 +479,7 @@ async function connectToWhatsApp() {
                 if (messageContent === '!指令' || messageContent === '！指令') {
                     const helpText = `📜 【皮皮小管家 / 小呆 指令說明手冊】\n\n` +
                         `🌸 【花農群 (Flyer) 指令】\n` +
-                        `• !id ── 自動綁定你的電話號碼並感謝記錄\n` +
+                        `• !id ── 自動綁定你的電話號碼\n` +
                         `• !功課 ── 查看當前功課繳交手冊與名單\n` +
                         `• !提醒 ── 催繳未完成功課成員（精準 @ 標註）\n` +
                         `• !ai加人 [名字] ── 新增成員至手冊名單\n` +
@@ -487,14 +487,14 @@ async function connectToWhatsApp() {
                         `• !ai清記錄 [名字] ── 重置該成員本期功課\n` +
                         `• !ai復原 ── 還原上一次的功課修改備份\n\n` +
                         `☕ 【咖啡室/RICE 群 AI 聊天與遊戲】\n` +
-                        `• ![說話內容] ── 直接跟小呆對話聊天（支援即時 Google 搜尋）\n` +
+                        `• ![說話內容] ── 直接跟小呆對話聊天（支援即時搜尋）\n` +
                         `• !遊戲 ── 互動遊戲菜單`;
                     await sock.sendMessage(remoteJid, { text: helpText }, { quoted: m });
                     continue;
                 }
 
                 // ==========================================
-                // 🌸 FLYER 群組專用邏輯 (!id 自動綁定與感謝)
+                // 🌸 FLYER 群組專用審核邏輯
                 // ==========================================
                 if (remoteJid === GROUPS.FLYER) {
                     if (messageContent === '!id' || messageContent === '！id') {
@@ -644,13 +644,8 @@ async function connectToWhatsApp() {
                 }
 
                 // ==========================================
-                // ☕ 其他群組 (Cafe / Rice / Admin) 處理 !id 與 AI 聊天
+                // ☕ CAFE / RICE / ADMIN 群組專屬：AI 聊天與遊戲
                 // ==========================================
-                if (messageContent === '!id' || messageContent === '！id') {
-                    await sock.sendMessage(remoteJid, { text: `🔑 本群組 JID：\n${remoteJid}\n你的號碼：${senderPhone}` }, { quoted: m });
-                    continue;
-                }
-
                 const isAllowedAIgroup = (
                     remoteJid === GROUPS.CAFE || 
                     remoteJid === GROUPS.ADMIN || 
