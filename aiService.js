@@ -91,7 +91,7 @@ ${historyText}
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
-            replyText = '🌱 哎呀，小呆同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
+            replyText = '🌱 哎呀，皮皮小管家同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
         }
     }
 
