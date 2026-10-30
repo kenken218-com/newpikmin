@@ -3,15 +3,24 @@
 // ==========================================
 
 function getDynamicDeadlines() {
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonthStr = now.toLocaleString('en-US', { month: 'short' });
-    const currentDate = now.getDate();
-    let targetDay = currentDate > 15 ? 30 : 15;
+    const now = new Date(); // 以今天（2026年10月31日）為起點
+    
+    // 強開為 7 天後
+    const forceDeadlineDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    // 種花為 14 天後 (兩週)
+    const flowerDeadlineDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+    const formatDate = (date) => {
+        const day = date.getDate();
+        const monthStr = date.toLocaleString('en-US', { month: 'short' });
+        const year = date.getFullYear();
+        return `${day} ${monthStr} ${year} 截`;
+    };
+
     return {
-        flowerDeadline: `${targetDay} ${currentMonthStr} ${currentYear} 截`,
-        force1Deadline: `${Math.min(targetDay - 7, 1)} ${currentMonthStr} ${currentYear} 截`,
-        force2Deadline: `${targetDay} ${currentMonthStr} ${currentYear} 截`
+        flowerDeadline: formatDate(flowerDeadlineDate),
+        force1Deadline: formatDate(forceDeadlineDate),
+        force2Deadline: formatDate(flowerDeadlineDate)
     };
 }
 
@@ -53,7 +62,7 @@ async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
 5. 「NONE」：不符合。
 訊息：\n"""\n${combinedMessageText}\n"""\n請嚴格回傳：FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
 
-        const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: prompt });
+        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
         const result = response.text ? response.text.trim() : 'NONE';
         if (result.includes('FLOWER')) return 'flower';
         if (result.includes('FORCE_OPEN_FULL')) return 'force_open_full';
