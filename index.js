@@ -56,7 +56,7 @@ async function connectToWhatsApp() {
 
         sock.ev.on('creds.update', authState.saveCreds);
         
-        // 🛡️ 加上 async 以正確使用 await qrcode.toDataURL
+        // 🛡️ 加上 async 確保 await qrcode.toDataURL 執行正確
         sock.ev.on('connection.update', async (update) => {
             const { connection, qr, lastDisconnect } = update;
             if (qr) latestQR = await qrcode.toDataURL(qr);
@@ -70,7 +70,7 @@ async function connectToWhatsApp() {
                 latestQR = '';
                 isConnected = true;
                 isConnecting = false;
-                console.log('✅ 皮皮小管家/小呆已連線！');
+                console.log('✅ 皮皮小管家已連線！');
             }
         });
 
