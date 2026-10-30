@@ -102,47 +102,65 @@ async function startTurtleGame(sock, remoteJid, difficulty, m, ai, systemPrompt)
     }
 }
 
-// 3. 猜人名遊戲投票發起（改用 WhatsApp 原生 Poll）
+// 3. 猜人名遊戲投票發起（純文字選單：穩定安全，防風控）
 async function startNameVote(sock, remoteJid, senderPhone, senderName, m) {
     if (nameGameSession.active) {
         await sock.sendMessage(remoteJid, { text: `⚠️ 目前已經有一場遊戲正在進行中囉！` }, { quoted: m });
         return;
     }
 
+    // 初始化遊戲狀態
     nameGameSession.active = true;
     nameGameSession.step = 'voting';
     nameGameSession.activeGroupJid = remoteJid;
     nameGameSession.hostPhone = senderPhone;
     nameGameSession.hostName = senderName;
+    nameGameSession.votes = { A: 0, B: 0, C: 0 };
+    nameGameSession.voters = {};
     nameGameSession.bPool = [];
     nameGameSession.secretMasterPhone = null;
 
-    // 🌟 發送 WhatsApp 原生 Poll 投票按鈕卡片
-    await sock.sendMessage(remoteJid, {
-        poll: {
-            name: `🎮 【猜人名 / 角色扮演】由 ${senderName} 發起！請點擊選擇玩法（30秒後自動結算）：`,
-            values: [
-                '【A】AI 隨機出題 (發起人指定主題)',
-                '【B】群友匿名出題 (私訊小呆 !出題)',
-                '【C】秘密扮演模式 (私訊小呆 !扮演)'
-            ],
-            selectableCount: 1
-        }
-    }, { quoted: m });
+    // 🌟 發送純文字投票邀請
+    const voteText = `🎮 【猜人名 / 角色扮演遊戲】投票開始！\n\n` +
+                     `由 ${senderName} 發起！請各位皮友在 30 秒內回覆代號選擇本局玩法：\n` +
+                     `【A】AI 隨機出題（發起人指定主題）\n` +
+                     `【B】群友匿名出題（私訊小呆 !出題 題目）\n` +
+                     `【C】秘密扮演模式（私訊小呆 !扮演 角色名稱）\n\n` +
+                     `💬 請直接在群組回覆：A、B 或 C！`;
 
-    // 30 秒後進入設定步驟（預設引導發起人進入 A 模式指定主題）
+    await sock.sendMessage(remoteJid, { text: voteText }, { quoted: m });
+
+    // 🕒 30 秒投票計時器與自動結算
     nameGameSession.timer = setTimeout(async () => {
         if (!nameGameSession.active || nameGameSession.step !== 'voting') return;
 
-        nameGameSession.mode = 'A';
-        nameGameSession.step = 'a_waiting_theme';
+        const votes = nameGameSession.votes;
+        const maxVotes = Math.max(votes.A, votes.B, votes.C);
+        let winningMode = 'A';
+        if (maxVotes === votes.B && votes.B > votes.A) winningMode = 'B';
+        if (maxVotes === votes.C && votes.C > votes.B && votes.C > votes.A) winningMode = 'C';
+
+        nameGameSession.mode = winningMode;
 
         const mentionTarget = senderPhone ? `${senderPhone}@s.whatsapp.net` : remoteJid;
 
-        await sock.sendMessage(remoteJid, { 
-            text: `📊 【投票完成！】\n\n@${senderPhone || senderName} 是本局遊戲發起人，請在群組輸入「!主題 [你的主題]」（例如：!主題 皮克敏角色）來讓小呆出題！`, 
-            mentions: [mentionTarget] 
-        });
+        if (winningMode === 'A') {
+            nameGameSession.step = 'a_waiting_theme';
+            await sock.sendMessage(remoteJid, { 
+                text: `📊 【投票結算】最高票：【A 模式】\n\n@${senderPhone || senderName} 是本局發起人，請在群組輸入「!主題 [你的主題]」（例如：!主題 動漫角色）來讓小呆出題！`, 
+                mentions: [mentionTarget] 
+            });
+        } else if (winningMode === 'B') {
+            nameGameSession.step = 'b_collecting';
+            await sock.sendMessage(remoteJid, { 
+                text: `📊 【投票結算】最高票：【B 模式 (群友匿名出題)】\n\n請各位玩家**私訊小呆**輸入「!出題 [你想出的名字/角色]」，1分鐘後將從題庫隨機抽取！` 
+            });
+        } else {
+            nameGameSession.step = 'c_waiting_master';
+            await sock.sendMessage(remoteJid, { 
+                text: `📊 【投票結算】最高票：【C 模式 (秘密扮演模式)】\n\n請隨便一位玩家**私訊小呆**輸入「!扮演 [你要扮演的角色]」來成為本局主持人！` 
+            });
+        }
     }, 30000);
 }
 
