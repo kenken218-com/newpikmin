@@ -4,7 +4,14 @@
 
 async function getHKWeather() {
     try {
-        const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrh&lang=tc');
+        // 🛡️ 修正 dataType=rhrh 為正確的 rhrread
+        const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            }
+        });
+        
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const data = await res.json();
 
         const tempObj = data.temperature?.data?.find(t => t.place === '香港天文台');
@@ -23,6 +30,7 @@ async function getHKWeather() {
         report += `🌱 **小呆貼心提醒**：出門種花記得留意天氣同帶遮呀！`;
         return report;
     } catch (e) {
+        console.error('❌ 天氣抓取失敗:', e.message);
         return `❌ 哎呀，天文台連線塞車緊，陣間再試過啦！`;
     }
 }
