@@ -48,7 +48,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                         '📋 查看功課表 (!功課)',
                         '🔔 催繳提醒 (!提醒)',
                         '🔗 綁定電話 (!id)',
-                        '🔄 復原備份 (!ai復原)'
+                        '🔄 重置功課 (!整期重置)'
                     ],
                     selectableCount: 1
                 }
@@ -56,7 +56,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         } else {
             await sock.sendMessage(remoteJid, {
                 poll: {
-                    name: `☕ 【咖啡室小呆功能選單】(發起人：${senderName})\n請點擊選擇你要使用的功能：`,
+                    name: `☕ 【咖啡室功能選單】(發起人：${senderName})\n請點擊選擇你要使用的功能：`,
                     values: [
                         '🎮 遊戲選單 (!遊戲)',
                         '🌦️ 即時天氣播報 (!天氣)',
@@ -116,7 +116,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
             await sock.sendMessage(remoteJid, {
                 poll: {
-                    name: `🎮 【小呆遊戲選單】(發起人：${senderName})\n請點擊選擇你想玩的遊戲：`,
+                    name: `🎮 【小管家遊戲選單】(發起人：${senderName})\n請點擊選擇你想玩的遊戲：`,
                     values: [
                         '🔮 塔羅牌運勢占卜 (!運勢)',
                         '🐢 懸疑海龜湯推理 (!海龜湯)',
