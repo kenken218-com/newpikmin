@@ -39,36 +39,27 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     const isGroup = remoteJid.endsWith('@g.us');
 
     // 1. 群組專屬動態指令手冊 (改用 WhatsApp 原生 Poll 投票卡片)
-    if (messageContent === '!指令' || messageContent === '！指令') {
-        if (remoteJid === GROUPS.FLYER) {
-            await sock.sendMessage(remoteJid, {
-                poll: {
-                    name: `🌸 【花農群工具選單】(發起人：${senderName})\n請點擊查看對應說明：`,
-                    values: [
-                        '📋 查看功課表 (!功課)',
-                        '🔔 催繳提醒 (!提醒)',
-                        '🔗 綁定電話 (!id)',
-                        '🔄 重置功課 (!整期重置)'
-                    ],
-                    selectableCount: 1
-                }
-            }, { quoted: m });
-        } else {
-            await sock.sendMessage(remoteJid, {
-                poll: {
-                    name: `☕ 【咖啡室功能選單】(發起人：${senderName})\n請點擊選擇你要使用的功能：`,
-                    values: [
-                        '🎮 遊戲選單 (!遊戲)',
-                        '🌦️ 即時天氣播報 (!天氣)',
-                        '🍽️ 搜尋餐廳地標 (!搵食)',
-                        '⏰ 設定個人提醒 (!提醒我)'
-                    ],
-                    selectableCount: 1
-                }
-            }, { quoted: m });
-        }
-        return;
+if (messageContent === '!指令' || messageContent === '！指令') {
+    if (remoteJid === GROUPS.FLYER) {
+        const flyerHelp = `🌸 【花農群 (Flyer) 專用指令手冊】\n\n` +
+                          `• !id ── 自動綁定你的電話號碼\n` +
+                          `• !功課 ── 查看當前功課繳交手冊與名單\n` +
+                          `• !提醒 ── 催繳未完成功課成員\n` +
+                          `• !ai加人 [名字] ── 新增成員\n` +
+                          `• !ai刪人 [名字] ── 移除成員\n` +
+                          `• !ai清記錄 [名字] ── 重置該成員本期功課`;
+        await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
+    } else {
+        const cafeHelp = `☕ 【咖啡室群 / 小呆 互動指令手冊】\n\n` +
+                         `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯）\n` +
+                         `🌤️ !天氣 ── 即時天氣播報\n` +
+                         `🍔 !搵食 ── 搜尋餐廳地標\n` +
+                         `⏰ !提醒我 ── 設定個人提醒\n` +
+                         `💬 ![說話內容] ── 直接跟小呆對話`;
+        await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
     }
+    return; // 👈 這裡改成 return 即可！
+}
 
     // ==========================================
     // 🌸 FLYER 群組專用審核邏輯
@@ -112,21 +103,16 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         const handledPlaces = await handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, messageContent);
         if (handledPlaces) return;
 
-        // 🎮 5. 遊戲專區 (改用 WhatsApp 原生 Poll 投票卡片)
+// 🎮 5. 遊戲專區 (純文字選單)
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
-            await sock.sendMessage(remoteJid, {
-                poll: {
-                    name: `🎮 【小管家遊戲選單】(發起人：${senderName})\n請點擊選擇你想玩的遊戲：`,
-                    values: [
-                        '🔮 塔羅牌運勢占卜 (!運勢)',
-                        '🐢 懸疑海龜湯推理 (!海龜湯)',
-                        '🎭 猜人名/角色扮演 (!猜人名)'
-                    ],
-                    selectableCount: 1
-                }
-            }, { quoted: m });
+            const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
+                             `• !運勢 ── 今日塔羅牌運勢占卜\n` +
+                             `• !海龜湯 [簡單/normal] ── 啟動懸疑海龜湯推理\n` +
+                             `• !猜人名 ── 發起猜人名限時投票模式`;
+            await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
             return;
         }
+        
 
         if (messageContent === '!運勢' || messageContent === '！運勢') {
             await handleTarotFortune(sock, remoteJid, senderPhone, senderName, m, db, ai, PIKMIN_SYSTEM_PROMPT);
