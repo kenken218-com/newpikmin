@@ -4,9 +4,11 @@
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const { handleFlyerMessage } = require('./flyerService');
 const { 
+    tarotSessions,
     turtleGame, 
     nameGameSession, 
-    handleTarotFortune, 
+    startTarotPrompt,
+    processTarotChoice, 
     startTurtleGame, 
     startNameVote 
 } = require('./games');
@@ -51,7 +53,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                               `• !ai清記錄 [名字] ── 重置該成員本期功課`;
             await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
         } else {
-            const cafeHelp = `☕ 【咖啡室群  互動指令手冊】\n\n` +
+            const cafeHelp = `☕ 【咖啡室群 互動指令手冊】\n\n` +
                              `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
                              `🌤️ !天氣 ── 即時天氣播報\n` +
                              `🍔 !搵食 ── 搜尋餐廳地標\n` +
@@ -107,16 +109,26 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         // 🎮 5. 遊戲專區 (純文字選單)
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
             const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
-                             `• !運勢 ── 今日塔羅牌運勢占卜\n` +
+                             `• !運勢 ── 今日塔羅牌運勢占卜 (78張牌自行抽牌)\n` +
                              `• !海龜湯 [簡單/normal] ── 啟動懸疑海龜湯推理\n` +
                              `• !猜人名 ── 發起猜人名限時投票模式`;
             await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
             return;
         }
 
+        // 🔮 5.1 塔羅牌：發起占卜
         if (messageContent === '!運勢' || messageContent === '！運勢') {
-            await handleTarotFortune(sock, remoteJid, senderPhone, senderName, m, db, ai, PIKMIN_SYSTEM_PROMPT);
+            await startTarotPrompt(sock, remoteJid, voterKey, senderName, m);
             return;
+        }
+
+        // 🔮 5.2 塔羅牌：攔截玩家輸入的抽牌數字 (1 - 78)
+        if (tarotSessions[voterKey] && /^\d+$/.test(messageContent)) {
+            const num = parseInt(messageContent, 10);
+            if (num >= 1 && num <= 78) {
+                const handled = await processTarotChoice(sock, remoteJid, voterKey, senderName, num, m, ai, PIKMIN_SYSTEM_PROMPT);
+                if (handled) return;
+            }
         }
 
         if (messageContent.startsWith('!海龜湯') || messageContent.startsWith('！海龜湯')) {
