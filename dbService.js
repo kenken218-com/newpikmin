@@ -24,10 +24,11 @@ async function initDB() {
     return db;
 }
 
-async function useMongoAuthState(database) {
-    if (!database) throw new Error("資料庫未連線，無法初始化 AuthState");
+async function useMongoAuthState() {
+    await initDB();
+    if (!db) throw new Error("資料庫未連線，無法初始化 AuthState");
 
-    const collection = database.collection('auth_state');
+    const collection = db.collection('auth_state');
     const writeData = async (data, id) => {
         try { await collection.updateOne({ _id: id }, { $set: { data: JSON.stringify(data, BufferJSON.replacer) } }, { upsert: true }); } catch (e) {}
     };
