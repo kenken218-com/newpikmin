@@ -51,12 +51,12 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                               `• !ai清記錄 [名字] ── 重置該成員本期功課`;
             await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
         } else {
-            const cafeHelp = `☕ 【咖啡室群 / 小呆 互動指令手冊】\n\n` +
+            const cafeHelp = `☕ 【咖啡室群  互動指令手冊】\n\n` +
                              `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
                              `🌤️ !天氣 ── 即時天氣播報\n` +
                              `🍔 !搵食 ── 搜尋餐廳地標\n` +
                              `⏰ !提醒我 [時間] [內容] ── 設定個人提醒\n` +
-                             `💬 ![說話內容] ── 直接跟小呆對話`;
+                             `💬 ![說話內容] ── 直接跟皮皮小管家對話`;
             await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
         }
         return;
