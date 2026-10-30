@@ -280,12 +280,13 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const PIKMIN_SYSTEM_PROMPT = `
-你是一位專屬香港《皮克敏 Bloom》(Pikmin Bloom) ☕ 悠閒咖啡室群組的高智慧靈魂小助手，名叫「皮克敏小管家」。
+你是一位專屬香港《皮克敏 Bloom》(Pikmin Bloom) ☕ 悠閒咖啡室群組的高智慧靈魂小助手，名字叫「皮皮小管家」。
 【高智慧與人性化聊天法則】：
 1. 你具備長期學習與記憶能力，能精準認出每位成員，並記住他們的興趣與習慣。
 2. 說話像一位常駐群組、感情豐富且風趣熱情的真朋友，絕非冰冷的 AI 機器人。
 3. 嚴格使用香港廣東話、道地香港用語及習慣口吻（例如：哩、諗住、啦、呀、喎、呢），並搭配可愛 emoji（☕, 🌸, 🍄, 🇭🇰, 🌱）。
-4. 請根據提供給你的「長期成員記憶」與「近期對話歷史」，自然流暢地接話聊天。
+4. 當成員查詢天氣、景點、美食、地圖或即時新聞時，請活用搜尋資料給出精準回覆。
+5. 請根據提供給你的「長期成員記憶」與「近期對話歷史」，自然流暢地接話聊天。
 `;
 
 // 🛡️ OpenRouter 備用線路 (gemma-4-31b:free)
@@ -312,8 +313,9 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
     return data.choices[0]?.message?.content || '';
 }
 
+// 🧠 具備 Google 即時搜尋功能的 AI 聊天處理
 async function processAIChat(sock, remoteJid, senderName, query, messageObj) {
-    console.log(`🚀 [AI 聊天啟動] 收到來自 ${senderName} 的提問: "${query}"`);
+    console.log(`🚀 [AI 聊天啟動 (含即時搜尋)] 收到來自 ${senderName} 的提問: "${query}"`);
     await recordCafeMessage(senderName, 'user', query);
 
     const userTraits = cafeMemory.userProfiles[senderName] || [];
@@ -328,27 +330,30 @@ ${profileText}
 ${historyText}
 
 現在 ${senderName} 對你說："${query}"
-請以「皮克敏小管家」身份用道地香港廣東話親切回覆：`;
+請以「皮皮小管家/小呆」身份用道地香港廣東話親切回覆：`;
 
     let replyText = '';
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash-lite',
             contents: fullPrompt,
-            config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
+            config: { 
+                systemInstruction: PIKMIN_SYSTEM_PROMPT,
+                tools: [{ googleSearch: {} }] 
+            }
         });
         replyText = response.text;
     } catch (err1) {
-        console.warn('⚠️ Gemini AI 失敗，切換至 OpenRouter Gemma 4 31B 備用線路...');
+        console.warn('⚠️ Gemini AI (帶搜尋) 失敗，切換至 OpenRouter Gemma 4 31B 備用線路...', err1.message);
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
-            replyText = '🌱 哎呀，皮克敏小管家同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
+            replyText = '🌱 哎呀，小呆同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
         }
     }
 
     if (replyText) {
-        await recordCafeMessage('皮克敏小管家', 'assistant', replyText);
+        await recordCafeMessage('皮皮小管家', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
     }
 }
@@ -428,7 +433,7 @@ async function connectToWhatsApp() {
         else if (connection === 'open') { 
             latestQR = ''; 
             isConnected = true; 
-            console.log('✅ 皮皮小管家已連線！');
+            console.log('✅ 皮皮小管家/小呆已連線！');
 
             // 每日早安廣播
             cron.schedule('0 8 * * *', async () => {
@@ -471,15 +476,10 @@ async function connectToWhatsApp() {
 
                 const senderName = m.pushName || '成員';
 
-                if (messageContent === '!id' || messageContent === '！id') {
-                    await sock.sendMessage(remoteJid, { text: `🔑 本群組 JID：\n${remoteJid}\n你的號碼：${senderPhone}` }, { quoted: m });
-                    continue;
-                }
-
                 if (messageContent === '!指令' || messageContent === '！指令') {
-                    const helpText = `📜 【皮皮小管家 指令說明手冊】\n\n` +
+                    const helpText = `📜 【皮皮小管家 / 小呆 指令說明手冊】\n\n` +
                         `🌸 【花農群 (Flyer) 指令】\n` +
-                        `• !id ── 自動綁定你的電話號碼\n` +
+                        `• !id ── 自動綁定你的電話號碼並感謝記錄\n` +
                         `• !功課 ── 查看當前功課繳交手冊與名單\n` +
                         `• !提醒 ── 催繳未完成功課成員（精準 @ 標註）\n` +
                         `• !ai加人 [名字] ── 新增成員至手冊名單\n` +
@@ -487,14 +487,14 @@ async function connectToWhatsApp() {
                         `• !ai清記錄 [名字] ── 重置該成員本期功課\n` +
                         `• !ai復原 ── 還原上一次的功課修改備份\n\n` +
                         `☕ 【咖啡室/RICE 群 AI 聊天與遊戲】\n` +
-                        `• ![說話內容] ── 直接跟皮皮小管家對話聊天\n` +
+                        `• ![說話內容] ── 直接跟小呆對話聊天（支援即時 Google 搜尋）\n` +
                         `• !遊戲 ── 互動遊戲菜單`;
                     await sock.sendMessage(remoteJid, { text: helpText }, { quoted: m });
                     continue;
                 }
 
                 // ==========================================
-                // 🌸 FLYER 群組專用審核邏輯
+                // 🌸 FLYER 群組專用邏輯 (!id 自動綁定與感謝)
                 // ==========================================
                 if (remoteJid === GROUPS.FLYER) {
                     if (messageContent === '!id' || messageContent === '！id') {
@@ -644,8 +644,13 @@ async function connectToWhatsApp() {
                 }
 
                 // ==========================================
-                // ☕ CAFE / RICE / ADMIN 群組專屬：AI 聊天與遊戲
+                // ☕ 其他群組 (Cafe / Rice / Admin) 處理 !id 與 AI 聊天
                 // ==========================================
+                if (messageContent === '!id' || messageContent === '！id') {
+                    await sock.sendMessage(remoteJid, { text: `🔑 本群組 JID：\n${remoteJid}\n你的號碼：${senderPhone}` }, { quoted: m });
+                    continue;
+                }
+
                 const isAllowedAIgroup = (
                     remoteJid === GROUPS.CAFE || 
                     remoteJid === GROUPS.ADMIN || 
@@ -654,7 +659,7 @@ async function connectToWhatsApp() {
 
                 if (isAllowedAIgroup) {
                     if (messageContent === '!遊戲' || messageContent === '！遊戲') {
-                        const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
+                        const gameMenu = `🎮 【小呆 遊戲選單】\n\n` +
                                          `請選擇你想玩的遊戲：\n` +
                                          `1️⃣ 回覆 「!運勢」 ── 今日塔羅牌運勢占卜\n` +
                                          `2️⃣ 回覆 「!海龜湯」 ── 啟動懸疑海龜湯推理遊戲（5分鐘無人回應自動結束）\n` +
