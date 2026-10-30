@@ -483,7 +483,7 @@ async function connectToWhatsApp() {
                         `• !功課 ── 查看當前功課繳交手冊與名單\n` +
                         `• !提醒 ── 催繳未完成功課成員（精準 @ 標註）\n` +
                         `• !ai加人 [名字] ── 新增成員至手冊名單\n` +
-                        `• !ai刪人 [名字] ── 從手冊名單移除成員\n` +
+                        `• !ai刪人 [名字] (或 !刪人) ── 從手冊名單移除成員\n` +
                         `• !ai清記錄 [名字] ── 重置該成員本期功課\n` +
                         `• !ai復原 ── 還原上一次的功課修改備份\n\n` +
                         `☕ 【咖啡室/RICE 群 AI 聊天與遊戲】\n` +
@@ -532,13 +532,16 @@ async function connectToWhatsApp() {
                         continue;
                     }
 
-                    if (messageContent.startsWith('!ai刪人') || messageContent.startsWith('！ai刪人')) {
-                        const name = messageContent.replace(/^(!ai刪人|！ai刪人)/, '').trim();
+                    // 支援 !ai刪人 與 !刪人
+                    if (messageContent.startsWith('!ai刪人') || messageContent.startsWith('！ai刪人') || messageContent.startsWith('!刪人') || messageContent.startsWith('！刪人')) {
+                        const name = messageContent.replace(/^(!ai刪人|！ai刪人|!刪人|！刪人)/, '').trim();
                         if (homeworkData[name]) {
                             await backupHomeworkData();
                             delete homeworkData[name];
                             await saveHomeworkData(homeworkData);
                             await sock.sendMessage(remoteJid, { text: `🗑️ 已成功移除成員「${name}」！\n\n` + generateHomeworkReport() });
+                        } else {
+                            await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` });
                         }
                         continue;
                     }
@@ -568,13 +571,13 @@ async function connectToWhatsApp() {
                                     mentions.push(targetJid);
                                     pendingPeopleText.push(`• @${status.phone} (${name})`);
                                 } else {
-                                    pendingPeopleText.push(`• ${name} (未輸入!id)`);
+                                    pendingPeopleText.push(`• ${name} ⚠️(未打 !id)`);
                                 }
                             }
                         }
 
                         let text = `🔔 【功課催繳提醒】\n\n以下皮友本期尚未完成功課：\n` + (pendingPeopleText.length > 0 ? pendingPeopleText.join('\n') : `🎉 全員已完成！`);
-                        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！`;
+                        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！\n💡 還未綁定的皮友，請在群裡輸入「!id」即可完成綁定！`;
                         await sock.sendMessage(remoteJid, { text, mentions }, { quoted: m });
                         continue;
                     }
@@ -650,6 +653,16 @@ async function connectToWhatsApp() {
                 );
 
                 if (isAllowedAIgroup) {
+                    if (messageContent === '!遊戲' || messageContent === '！遊戲') {
+                        const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
+                                         `請選擇你想玩的遊戲：\n` +
+                                         `1️⃣ 回覆 「!運勢」 ── 今日塔羅牌運勢占卜\n` +
+                                         `2️⃣ 回覆 「!海龜湯」 ── 啟動懸疑海龜湯推理遊戲（5分鐘無人回應自動結束）\n` +
+                                         `3️⃣ 回覆 「!猜人名」 ── 發起猜人名限時投票`;
+                        await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
+                        continue;
+                    }
+
                     const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
                     if (isCommand && messageContent.length > 1) {
                         const query = messageContent.substring(1).trim();
