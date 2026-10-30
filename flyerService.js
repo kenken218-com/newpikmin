@@ -10,8 +10,9 @@ const pendingActions = {};
 
 async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, messageContent, homeworkData, saveHomeworkData, backupHomeworkData, db, ai, scheduleMultipleDeletions) {
     
-    // 🛡️ 處理二次確認指令：!確認
-    if (messageContent === '!確認' || messageContent === '！確認') {
+    // 🛡️ 處理二次確認指令：!確認 (支援容錯空格)
+    const isConfirmCmd = /^[!！]\s*確認$/.test(messageContent);
+    if (isConfirmCmd) {
         const pending = pendingActions[senderPhone];
         if (!pending || Date.now() > pending.expiresAt) {
             delete pendingActions[senderPhone];
@@ -46,9 +47,10 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 1. 綁定 ID
-    if (messageContent === '!id' || messageContent === '！id') {
+    const isIdCmd = /^[!！]\s*id$/.test(messageContent);
+    if (isIdCmd) {
         if (!senderPhone) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的電話號碼，請稍後再試。` }, { quoted: m });
+            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的電話號碼請稍後再試。` }, { quoted: m });
             return;
         }
         let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === senderName.toLowerCase());
@@ -63,8 +65,8 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 3. 加人
-    if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人')) {
-        const name = messageContent.replace(/^(!ai加人|！ai加人)/, '').trim();
+    if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人') || messageContent.startsWith('! ai加人') || messageContent.startsWith('！ ai加人')) {
+        const name = messageContent.replace(/^[!！]\s*ai加人/, '').trim();
         if (name) {
             await backupHomeworkData();
             homeworkData[name] = { phone: "", flower: false, q1: false, q2: false };
@@ -75,14 +77,18 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 4. 刪人（改為需要二次確認）
-    if (messageContent.startsWith('!ai刪人') || messageContent.startsWith('！ai刪人') || messageContent.startsWith('!刪人') || messageContent.startsWith('！刪人')) {
-        const name = messageContent.replace(/^(!ai刪人|！ai刪人|!刪人|！刪人)/, '').trim();
+    if (/^[!！]\s*(ai刪人|刪人)/.test(messageContent)) {
+        const name = messageContent.replace(/^[!！]\s*(ai刪人|刪人)/, '').trim();
         if (!homeworkData[name]) {
             await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` }, { quoted: m });
             return;
         }
 
-        // 記錄暫存並要求 30 秒內回覆 !確認
+        if (!senderPhone) {
+            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的發送者電話，請先在群內輸入 !id 綁定！` }, { quoted: m });
+            return;
+        }
+
         pendingActions[senderPhone] = {
             type: 'delete_user',
             target: name,
@@ -96,8 +102,8 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 5. 清除記錄
-    if (messageContent.startsWith('!ai清除記錄') || messageContent.startsWith('！ai清除記錄') || messageContent.startsWith('!ai清記錄') || messageContent.startsWith('！ai清記錄')) {
-        const name = messageContent.replace(/^(!ai清除記錄|！ai清除記錄|!ai清記錄|！ai清記錄)/, '').trim();
+    if (/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/.test(messageContent)) {
+        const name = messageContent.replace(/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/, '').trim();
         let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === name.toLowerCase()) || name;
         if (homeworkData[matchedName]) {
             await backupHomeworkData();
@@ -111,7 +117,8 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 6. 提醒
-    if (messageContent === '!提醒' || messageContent === '！提醒') {
+    const isReminderCmd = /^[!！]\s*提醒$/.test(messageContent);
+    if (isReminderCmd) {
         let pendingPeopleText = [];
         let mentions = [];
 
@@ -134,13 +141,20 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 7. 功課表
-    if (messageContent === '!功課' || messageContent === '！功課') {
+    const isHomeworkCmd = /^[!！]\s*功課$/.test(messageContent);
+    if (isHomeworkCmd) {
         await sock.sendMessage(remoteJid, { text: generateHomeworkReport(homeworkData) }, { quoted: m });
         return;
     }
 
-    // 🔄 整期重置（改為需要二次確認）
-    if (messageContent === '!ai整期重置' || messageContent === '！ai整期重置' || messageContent === '!ai清空全部' || messageContent === '！ai清空全部') {
+    // 🔄 整期重置（支援空格與多種寫法）
+    const isResetAllCmd = /^[!！]\s*(ai整期重置|ai清空全部|整期重置|清空全部)$/.test(messageContent);
+    if (isResetAllCmd) {
+        if (!senderPhone) {
+            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的電話號碼，請先在群內輸入 !id 綁定！` }, { quoted: m });
+            return;
+        }
+
         pendingActions[senderPhone] = {
             type: 'reset_all',
             expiresAt: Date.now() + 30000
