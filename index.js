@@ -301,7 +301,7 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            "model": "google/gemma-4-31b:free", 
+            "model": "google/gemma-4-31b-it:free", 
             "messages": [
                 { "role": "system", "content": PIKMIN_SYSTEM_PROMPT },
                 { "role": "user", "content": fullPrompt }
@@ -339,7 +339,7 @@ ${historyText}
             contents: fullPrompt,
             config: { 
                 systemInstruction: PIKMIN_SYSTEM_PROMPT,
-                tools: [{ googleSearch: {} }] 
+                //
             }
         });
         replyText = response.text;
