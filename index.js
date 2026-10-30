@@ -65,6 +65,7 @@ const DEFAULT_HOMEWORK_DATA = {
     "Endy.K": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
     "Jade": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
     "KA": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
+    "Karen": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
     "Ken Kwok": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
     "Michelle": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
     "V": { phone: "", flower: false, q1: false, q2: false, lastForceOpenDate: null },
@@ -152,6 +153,40 @@ async function saveHomeworkData(data) {
 
 let homeworkData = JSON.parse(JSON.stringify(DEFAULT_HOMEWORK_DATA));
 const userRecentMessages = {};
+
+// 🧠 【CAFE / RICE 群專屬：MongoDB 長期印象記憶】
+async function loadLongTermMemory() {
+    if (db) {
+        try {
+            const collection = db.collection('cafe_memory');
+            const doc = await collection.findOne({ _id: 'memory_data' });
+            if (doc) return { recentHistory: doc.recentHistory || [], userProfiles: doc.userProfiles || {} };
+        } catch (e) {}
+    }
+    return { recentHistory: [], userProfiles: {} };
+}
+
+async function saveLongTermMemory(memory) {
+    cafeMemory = memory;
+    if (db) {
+        try {
+            const collection = db.collection('cafe_memory');
+            await collection.updateOne(
+                { _id: 'memory_data' },
+                { $set: { recentHistory: memory.recentHistory, userProfiles: memory.userProfiles, updatedAt: new Date() } },
+                { upsert: true }
+            );
+        } catch (e) {}
+    }
+}
+
+let cafeMemory = { recentHistory: [], userProfiles: {} };
+
+async function recordCafeMessage(senderName, role, text) {
+    cafeMemory.recentHistory.push({ senderName, role, text, time: new Date().toLocaleString() });
+    if (cafeMemory.recentHistory.length > 40) cafeMemory.recentHistory.shift();
+    await saveLongTermMemory(cafeMemory);
+}
 
 async function backupHomeworkData() {
     if (db) {
@@ -244,7 +279,16 @@ app.listen(PORT, () => console.log(`🌐 [Web Server] Port ${PORT}`));
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-// 🛡️ OpenRouter 備用線路更新為 gemma-4-31b:free
+const PIKMIN_SYSTEM_PROMPT = `
+你是一位專屬香港《皮克敏 Bloom》(Pikmin Bloom) ☕ 悠閒咖啡室群組的高智慧靈魂小助手，名叫「皮克敏小管家」。
+【高智慧與人性化聊天法則】：
+1. 你具備長期學習與記憶能力，能精準認出每位成員，並記住他們的興趣與習慣。
+2. 說話像一位常駐群組、感情豐富且風趣熱情的真朋友，絕非冰冷的 AI 機器人。
+3. 嚴格使用香港廣東話、道地香港用語及習慣口吻（例如：哩、諗住、啦、呀、喎、呢），並搭配可愛 emoji（☕, 🌸, 🍄, 🇭🇰, 🌱）。
+4. 請根據提供給你的「長期成員記憶」與「近期對話歷史」，自然流暢地接話聊天。
+`;
+
+// 🛡️ OpenRouter 備用線路 (gemma-4-31b:free)
 async function fetchOpenRouterGemmaFree(fullPrompt) {
     const openRouterKey = process.env.OPENROUTER_API_KEY || "";
     if (!openRouterKey) throw new Error("未設定 OPENROUTER_API_KEY");
@@ -258,7 +302,7 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
         body: JSON.stringify({
             "model": "google/gemma-4-31b:free", 
             "messages": [
-                { "role": "system", "content": "你是一位香港皮克敏小管家，請用道地廣東話簡短回覆。" },
+                { "role": "system", "content": PIKMIN_SYSTEM_PROMPT },
                 { "role": "user", "content": fullPrompt }
             ]
         })
@@ -268,25 +312,58 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
     return data.choices[0]?.message?.content || '';
 }
 
+async function processAIChat(sock, remoteJid, senderName, query, messageObj) {
+    console.log(`🚀 [AI 聊天啟動] 收到來自 ${senderName} 的提問: "${query}"`);
+    await recordCafeMessage(senderName, 'user', query);
+
+    const userTraits = cafeMemory.userProfiles[senderName] || [];
+    const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期印象是：[${userTraits.join(', ')}]` : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
+    const historyText = cafeMemory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
+
+    const fullPrompt = `
+【成員長期檔案】:
+${profileText}
+
+【☕ 最近對話歷史】:
+${historyText}
+
+現在 ${senderName} 對你說："${query}"
+請以「皮克敏小管家」身份用道地香港廣東話親切回覆：`;
+
+    let replyText = '';
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash-lite',
+            contents: fullPrompt,
+            config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
+        });
+        replyText = response.text;
+    } catch (err1) {
+        console.warn('⚠️ Gemini AI 失敗，切換至 OpenRouter Gemma 4 31B 備用線路...');
+        try {
+            replyText = await fetchOpenRouterGemmaFree(fullPrompt);
+        } catch (err2) {
+            replyText = '🌱 哎呀，皮克敏小管家同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
+        }
+    }
+
+    if (replyText) {
+        await recordCafeMessage('皮克敏小管家', 'assistant', replyText);
+        await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
+    }
+}
+
 async function aiCheckHomeworkAdvanced(combinedMessageText) {
     try {
-        const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請忽視訊息中的閒聊、打菇、時區、問候語等無效內容，專注檢查經緯度座標與花名。
-
+        const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請忽視閒聊、打菇、時區等無效內容，專注檢查經緯度座標與花名。
 花名定義：包含任何真實花名以及遊戲常見俗稱（如變異、紅主、藍主、黃主、混色、鼠尾草、白花等）。
-
 審核規則：
-1. 「FLOWER」：只要包含任何花名或俗稱，且同時有 3 個或以上的經緯度座標。
-2. 「FORCE_OPEN_FULL」：包含「強開」或白花名稱，且**剛好包含 2 個或以上經緯度座標**。
-3. 「FORCE_OPEN_NEED_MORE」：包含「強開」或白花名稱，但**僅有 1 個經緯度座標**。
-4. 「NEED_FLOWER_NAME」：**完全沒有提及任何花名**，但發送了 3 個或以上大量的經緯度座標。
-5. 「NONE」：以上皆不符合。
-
-訊息內容：
-"""
-${combinedMessageText}
-"""
-
-請嚴格回傳：FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
+1. 「FLOWER」：含花名或俗稱，且同時有 3 個或以上經緯度座標。
+2. 「FORCE_OPEN_FULL」：含「強開」或白花名稱，且剛好包含 2 個或以上經緯度座標。
+3. 「FORCE_OPEN_NEED_MORE」：含「強開」或白花名稱，但僅有 1 個經緯度座標。
+4. 「NEED_FLOWER_NAME」：完全沒有提及花名，但發送了 3 個或以上座標。
+5. 「NONE」：不符合。
+訊息：\n"""\n${combinedMessageText}\n"""\n請嚴格回傳：FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
 
         const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: prompt });
         const result = response.text ? response.text.trim() : 'NONE';
@@ -327,6 +404,7 @@ let nameVoteSession = {
 async function connectToWhatsApp() {
     await initDB();
     homeworkData = await loadHomeworkData();
+    cafeMemory = await loadLongTermMemory();
 
     const { state, saveCreds } = await useMongoAuthState();
     const sock = makeWASocket({
@@ -347,7 +425,35 @@ async function connectToWhatsApp() {
         const { connection, qr } = update;
         if (qr) latestQR = await qrcode.toDataURL(qr);
         if (connection === 'close') { isConnected = false; setTimeout(() => connectToWhatsApp(), 3000); }
-        else if (connection === 'open') { latestQR = ''; isConnected = true; console.log('✅ 皮皮小管家已連線！'); }
+        else if (connection === 'open') { 
+            latestQR = ''; 
+            isConnected = true; 
+            console.log('✅ 皮皮小管家已連線！');
+
+            // 每日早安廣播
+            cron.schedule('0 8 * * *', async () => {
+                try {
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-3.5-flash-lite',
+                        contents: "生成一句充滿皮克敏 Bloom 風格、溫馨且帶有香港廣東話特色的早安問候語。",
+                        config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
+                    });
+                    await sock.sendMessage(GROUPS.CAFE, { text: `【☕ 早安咖啡時間】\n\n${response.text || '🌱 大家早安！今天又是充滿活力種花的一天！'}` });
+                } catch (err) {}
+            }, { timezone: "Asia/Hong_Kong" });
+
+            // 每日晚安廣播
+            cron.schedule('20 23 * * *', async () => {
+                try {
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-3.5-flash-lite',
+                        contents: "生成一句充滿皮克敏 Bloom 風格、溫馨且帶有香港廣東話特色的晚安問候語。",
+                        config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
+                    });
+                    await sock.sendMessage(GROUPS.CAFE, { text: `【🌙 晚安結算】\n\n${response.text || '🌱 大家晚安！皮克敏夥伴們要好好休息了～'}` });
+                } catch (err) {}
+            }, { timezone: "Asia/Hong_Kong" });
+        }
     });
 
     sock.ev.on('messages.upsert', async (event) => {
@@ -365,27 +471,32 @@ async function connectToWhatsApp() {
 
                 const senderName = m.pushName || '成員';
 
+                if (messageContent === '!id' || messageContent === '！id') {
+                    await sock.sendMessage(remoteJid, { text: `🔑 本群組 JID：\n${remoteJid}\n你的號碼：${senderPhone}` }, { quoted: m });
+                    continue;
+                }
+
                 if (messageContent === '!指令' || messageContent === '！指令') {
                     const helpText = `📜 【皮皮小管家 指令說明手冊】\n\n` +
                         `🌸 【花農群 (Flyer) 指令】\n` +
-                        `• !id ── 自動綁定你的電話號碼並回應已記錄\n` +
+                        `• !id ── 自動綁定你的電話號碼\n` +
                         `• !功課 ── 查看當前功課繳交手冊與名單\n` +
                         `• !提醒 ── 催繳未完成功課成員（精準 @ 標註）\n` +
                         `• !ai加人 [名字] ── 新增成員至手冊名單\n` +
                         `• !ai刪人 [名字] ── 從手冊名單移除成員\n` +
                         `• !ai清記錄 [名字] ── 重置該成員本期功課\n` +
                         `• !ai復原 ── 還原上一次的功課修改備份\n\n` +
-                        `☕ 【咖啡室 (Cafe) 遊戲指令】\n` +
-                        `• !遊戲 ── 叫出所有互動遊戲菜單\n` +
-                        `• !運勢 (或回覆 1) ── 今日塔羅牌運勢占卜\n` +
-                        `• !海龜湯 (或回覆 2) ── 開啟海龜湯（5分鐘無人回應自動結束）\n` +
-                        `• !猜人名 (或回覆 3) ── 發起猜人名限時投票`;
+                        `☕ 【咖啡室/RICE 群 AI 聊天與遊戲】\n` +
+                        `• ![說話內容] ── 直接跟皮皮小管家對話聊天\n` +
+                        `• !遊戲 ── 互動遊戲菜單`;
                     await sock.sendMessage(remoteJid, { text: helpText }, { quoted: m });
                     continue;
                 }
 
+                // ==========================================
+                // 🌸 FLYER 群組專用審核邏輯
+                // ==========================================
                 if (remoteJid === GROUPS.FLYER) {
-                    // 🔑 !id 自動綁定並給予感謝回饋
                     if (messageContent === '!id' || messageContent === '！id') {
                         let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === senderName.toLowerCase());
                         if (matchedName) {
@@ -463,8 +574,7 @@ async function connectToWhatsApp() {
                         }
 
                         let text = `🔔 【功課催繳提醒】\n\n以下皮友本期尚未完成功課：\n` + (pendingPeopleText.length > 0 ? pendingPeopleText.join('\n') : `🎉 全員已完成！`);
-                        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除，需等待下下次招人時方可重新加入喔！`;
-                        
+                        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！`;
                         await sock.sendMessage(remoteJid, { text, mentions }, { quoted: m });
                         continue;
                     }
@@ -528,6 +638,25 @@ async function connectToWhatsApp() {
                     }, 60000);
 
                     continue;
+                }
+
+                // ==========================================
+                // ☕ CAFE / RICE / ADMIN 群組專屬：AI 聊天與遊戲
+                // ==========================================
+                const isAllowedAIgroup = (
+                    remoteJid === GROUPS.CAFE || 
+                    remoteJid === GROUPS.ADMIN || 
+                    remoteJid === GROUPS.RICE
+                );
+
+                if (isAllowedAIgroup) {
+                    const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
+                    if (isCommand && messageContent.length > 1) {
+                        const query = messageContent.substring(1).trim();
+                        setImmediate(() => {
+                            processAIChat(sock, remoteJid, senderName, query, m);
+                        });
+                    }
                 }
 
                 if (turtleGame.active) {
