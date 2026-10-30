@@ -12,7 +12,7 @@ async function handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, mes
     if (messageContent === '!搵食' || messageContent === '！搵食' || messageContent === '!餐廳' || messageContent === '！餐廳') {
         searchSessions[senderJid] = { step: 'waiting_district' };
         await sock.sendMessage(remoteJid, { 
-            text: `🍽️ 【小呆搵食精靈啟動】\n@${senderName}，請問你想去邊個**地區**搵嘢食呀？\n（例如：銅鑼灣、旺角、尖沙咀、荃灣等）`,
+            text: `🍽️ 【小管家搵食精靈啟動】\n@${senderName}，請問你想去邊個**地區**搵嘢食呀？\n（例如：銅鑼灣、旺角、尖沙咀、荃灣等）`,
             mentions: [senderJid]
         }, { quoted: m });
         return true;
@@ -38,7 +38,7 @@ async function handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, mes
         // 清除 session
         delete searchSessions[senderJid];
 
-        await sock.sendMessage(remoteJid, { text: `🔍 條件收集完畢！小呆正嚴格搜尋「${finalQuery}」，請稍候……` }, { quoted: m });
+        await sock.sendMessage(remoteJid, { text: `🔍 條件收集完畢！小管家正嚴格搜尋「${finalQuery}」，請稍候……` }, { quoted: m });
 
         // 呼叫 Google Cloud Places API (New)
         const resultText = await callGooglePlacesAPI(finalQuery);
@@ -63,7 +63,8 @@ async function callGooglePlacesAPI(query) {
             },
             body: JSON.stringify({
                 textQuery: query,
-                languageCode: 'zh-HK'
+                languageCode: 'zh-HK',
+                maxResultCount: 5 // 👈 1. 告訴 Google 最多回傳 5 筆結果
             })
         });
 
@@ -72,9 +73,9 @@ async function callGooglePlacesAPI(query) {
             return `🔍 搵唔到符合「${query}」嘅餐廳，可能要換個條件再試一次！`;
         }
 
-        // 只取前 2 個最精準的結果，省版面也省額度
-        const topPlaces = data.places.slice(0, 2);
-        let resultText = `📍 【精準搵食結果：${query}】\n\n`;
+        // 👈 2. 將回傳結果取前 5 個
+        const topPlaces = data.places.slice(0, 5);
+        let resultText = `📍 【精準搵食結果（共 ${topPlaces.length} 間）：${query}】\n\n`;
 
         topPlaces.forEach((place, index) => {
             const name = place.displayName?.text || '未知名稱';
