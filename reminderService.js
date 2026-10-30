@@ -24,8 +24,13 @@ function parseTimeString(timeStr) {
 }
 
 async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db) {
-    // 🛡️ 嚴格限制：只能在 Coffee 群使用
-    if (remoteJid !== GROUPS.CAFE) return false;
+// 🛡️ 允許在 Cafe、Admin、Rice 群使用提醒功能
+    const isAllowedGroup = (
+        remoteJid === GROUPS.CAFE || 
+        remoteJid === GROUPS.ADMIN || 
+        remoteJid === GROUPS.RICE
+    );
+    if (!isAllowedGroup) return false;
 
     const cmdRegex = /^[!！]提醒我\s+(.+)$/;
     const match = messageContent.match(cmdRegex);
