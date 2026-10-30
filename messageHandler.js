@@ -30,6 +30,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     } else if (!senderJid.endsWith('@lid')) {
         senderPhone = senderJid.split('@')[0].replace(/[^0-9]/g, '');
     }
+    const voterKey = senderPhone || senderJid;
 
     const msgObj = m.message;
     const messageContent = (msgObj.conversation || msgObj.extendedTextMessage?.text || msgObj.imageMessage?.caption || '').trim();
@@ -38,28 +39,28 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     const senderName = m.pushName || '成員';
     const isGroup = remoteJid.endsWith('@g.us');
 
-    // 1. 群組專屬動態指令手冊 (改用 WhatsApp 原生 Poll 投票卡片)
-if (messageContent === '!指令' || messageContent === '！指令') {
-    if (remoteJid === GROUPS.FLYER) {
-        const flyerHelp = `🌸 【花農群 (Flyer) 專用指令手冊】\n\n` +
-                          `• !id ── 自動綁定你的電話號碼\n` +
-                          `• !功課 ── 查看當前功課繳交手冊與名單\n` +
-                          `• !提醒 ── 催繳未完成功課成員\n` +
-                          `• !ai加人 [名字] ── 新增成員\n` +
-                          `• !ai刪人 [名字] ── 移除成員\n` +
-                          `• !ai清記錄 [名字] ── 重置該成員本期功課`;
-        await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
-    } else {
-        const cafeHelp = `☕ 【咖啡室群 / 小呆 互動指令手冊】\n\n` +
-                         `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯）\n` +
-                         `🌤️ !天氣 ── 即時天氣播報\n` +
-                         `🍔 !搵食 ── 搜尋餐廳地標\n` +
-                         `⏰ !提醒我 ── 設定個人提醒\n` +
-                         `💬 ![說話內容] ── 直接跟小呆對話`;
-        await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
+    // 1. 群組專屬動態指令手冊 (純文字極速回應)
+    if (messageContent === '!指令' || messageContent === '！指令') {
+        if (remoteJid === GROUPS.FLYER) {
+            const flyerHelp = `🌸 【花農群 (Flyer) 專用指令手冊】\n\n` +
+                              `• !id ── 自動綁定你的電話號碼\n` +
+                              `• !功課 ── 查看當前功課繳交手冊與名單\n` +
+                              `• !提醒 ── 催繳未完成功課成員\n` +
+                              `• !ai加人 [名字] ── 新增成員\n` +
+                              `• !ai刪人 [名字] ── 移除成員\n` +
+                              `• !ai清記錄 [名字] ── 重置該成員本期功課`;
+            await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
+        } else {
+            const cafeHelp = `☕ 【咖啡室群 / 小呆 互動指令手冊】\n\n` +
+                             `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
+                             `🌤️ !天氣 ── 即時天氣播報\n` +
+                             `🍔 !搵食 ── 搜尋餐廳地標\n` +
+                             `⏰ !提醒我 [時間] [內容] ── 設定個人提醒\n` +
+                             `💬 ![說話內容] ── 直接跟小呆對話`;
+            await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
+        }
+        return;
     }
-    return; // 👈 這裡改成 return 即可！
-}
 
     // ==========================================
     // 🌸 FLYER 群組專用審核邏輯
@@ -103,7 +104,7 @@ if (messageContent === '!指令' || messageContent === '！指令') {
         const handledPlaces = await handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, messageContent);
         if (handledPlaces) return;
 
-// 🎮 5. 遊戲專區 (純文字選單)
+        // 🎮 5. 遊戲專區 (純文字選單)
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
             const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
                              `• !運勢 ── 今日塔羅牌運勢占卜\n` +
@@ -112,7 +113,6 @@ if (messageContent === '!指令' || messageContent === '！指令') {
             await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
             return;
         }
-        
 
         if (messageContent === '!運勢' || messageContent === '！運勢') {
             await handleTarotFortune(sock, remoteJid, senderPhone, senderName, m, db, ai, PIKMIN_SYSTEM_PROMPT);
@@ -129,6 +129,18 @@ if (messageContent === '!指令' || messageContent === '！指令') {
         if (messageContent === '!猜人名' || messageContent === '！猜人名') {
             await startNameVote(sock, remoteJid, senderPhone, senderName, m);
             return;
+        }
+
+        // 🗳️ 猜人名遊戲：純文字投票攔截 (A / B / C)
+        if (nameGameSession.active && nameGameSession.step === 'voting') {
+            const cleanVote = messageContent.trim().toUpperCase();
+            if (['A', 'B', 'C'].includes(cleanVote)) {
+                if (!nameGameSession.voters[voterKey]) {
+                    nameGameSession.voters[voterKey] = cleanVote;
+                    nameGameSession.votes[cleanVote]++;
+                    await sock.sendMessage(remoteJid, { react: { text: '👍', key: m.key } });
+                }
+            }
         }
 
         // 🔒 嚴格發起人權限鎖驗證 (A 模式主題指定)
