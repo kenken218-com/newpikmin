@@ -2,8 +2,9 @@
 // 🌤️ 香港天文台即時天氣與 7 天預報服務 (weatherService.js)
 // ==========================================
 const { GROUPS } = require('./config');
+const { recordCafeMessage } = require('./aiService'); // 引入紀錄歷史的函式
 
-async function handleWeatherCommand(sock, m, remoteJid, messageContent) {
+async function handleWeatherCommand(sock, m, remoteJid, messageContent, db, senderName = '系統') {
     // 🛡️ 允許在 Cafe、Admin、Rice 群使用天氣功能
     const isAllowedGroup = (
         remoteJid === GROUPS.CAFE || 
@@ -22,6 +23,8 @@ async function handleWeatherCommand(sock, m, remoteJid, messageContent) {
     const isSevenDays = messageContent.includes('7') || messageContent.includes('七') || messageContent.includes('降雨');
 
     try {
+        let replyText = '';
+
         if (isSevenDays) {
             // 📅 抓取香港天文台九天/七天天氣預報 API
             const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=fnd&lang=tc');
@@ -33,14 +36,13 @@ async function handleWeatherCommand(sock, m, remoteJid, messageContent) {
                 return true;
             }
 
-            let replyText = `📅 【香港天文台 • 未來幾日天氣與降雨預報】\n`;
+            replyText = `📅 【香港天文台 • 未來幾日天氣與降雨預報】\n`;
             replyText += `📝 ${data.generalSituation || '近期天氣概況'}\n`;
             replyText += `───────────────────\n`;
 
             // 取前 7 天
             for (let i = 0; i < Math.min(7, forecastList.length); i++) {
                 const day = forecastList[i];
-                // 日期格式化 (例如 20261101 -> 11/01)
                 const fDate = day.forecastDate;
                 const formattedDate = `${fDate.substring(4, 6)}/${fDate.substring(6, 8)}`;
                 
@@ -67,17 +69,23 @@ async function handleWeatherCommand(sock, m, remoteJid, messageContent) {
             const rainObj = data.rainfall?.data?.find(r => r.place === '中西區') || data.rainfall?.data?.[0];
             const rainfall = rainObj ? `${rainObj.max} 毫米` : '0 毫米';
 
-            const replyText = `🌤️ 【香港天文台 • 即時天氣播報】\n` +
-                              `───────────────────\n` +
-                              `${warningMsg}` +
-                              `🌡️ 當前氣溫：**${temp}**\n` +
-                              `💧 相對濕度：**${humidity}**\n` +
-                              `🌧️ 雨量紀錄：**${rainfall}**\n` +
-                              `📝 天氣概況：${data.forecastDesc || '晴朗或多雲'}\n\n` +
-                              `💡 想看更詳細的 7 天預報與降雨機率嗎？請輸入 **!7天天氣** 喔！`;
+            replyText = `🌤️ 【香港天文台 • 即時天氣播報】\n` +
+                            `───────────────────\n` +
+                            `${warningMsg}` +
+                            `🌡️ 當前氣溫：**${temp}**\n` +
+                            `💧 相對濕度：**${humidity}**\n` +
+                            `🌧️ 雨量紀錄：**${rainfall}**\n` +
+                            `📝 天氣概況：${data.forecastDesc || '晴朗或多雲'}\n\n` +
+                            `💡 想看更詳細的 7 天預報與降雨機率嗎？請輸入 **!7天天氣** 喔！`;
 
             await sock.sendMessage(remoteJid, { text: replyText }, { quoted: m });
         }
+
+        // 🔗 關鍵修復：將天文台回傳的氣象數據同步寫入 AI 的對話歷史中，讓小管家擁有記憶！
+        if (db && replyText) {
+            await recordCafeMessage(db, '香港天文台', 'system', `[自動發布的天氣資訊]:\n${replyText}`);
+        }
+
     } catch (e) {
         console.error('❌ 獲取天氣失敗:', e);
         await sock.sendMessage(remoteJid, { text: `❌ 哎呀！連線到香港天文台伺服器失敗了，請稍後再試！` }, { quoted: m });
