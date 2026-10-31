@@ -45,20 +45,20 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     if (messageContent === '!指令' || messageContent === '！指令') {
         if (remoteJid === GROUPS.FLYER) {
             const flyerHelp = `🌸 【花農群 (Flyer) 專用指令手冊】\n\n` +
-                              `• !id ── 自動綁定你的電話號碼\n` +
-                              `• !功課 ── 查看當前功課繳交手冊與名單\n` +
-                              `• !提醒 ── 催繳未完成功課成員\n` +
-                              `• !ai加人 [名字] ── 新增成員\n` +
-                              `• !ai刪人 [名字] ── 移除成員\n` +
-                              `• !ai清記錄 [名字] ── 重置該成員本期功課`;
+                            `• !id ── 自動綁定你的電話號碼\n` +
+                            `• !功課 ── 查看當前功課繳交手冊與名單\n` +
+                            `• !提醒 ── 催繳未完成功課成員\n` +
+                            `• !ai加人 [名字] ── 新增成員\n` +
+                            `• !ai刪人 [名字] ── 移除成員\n` +
+                            `• !ai清記錄 [名字] ── 重置該成員本期功課`;
             await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
         } else {
             const cafeHelp = `☕ 【咖啡室群 互動指令手冊】\n\n` +
-                             `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
-                             `🌤️ !天氣 ── 即時天氣播報\n` +
-                             `🍔 !搵食 ── 搜尋餐廳地標\n` +
-                             `⏰ !提醒我 [時間] [內容] ── 設定個人提醒\n` +
-                             `💬 ![說話內容] ── 直接跟皮皮小管家對話`;
+                           `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
+                           `🌤️ !天氣 ── 即時天氣播報\n` +
+                           `🍔 !搵食 ── 搜尋餐廳地標\n` +
+                           `⏰ !提醒我 [時間] [內容] ── 設定個人提醒\n` +
+                           `💬 ![說話內容] ── 直接跟皮皮小管家對話`;
             await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
         }
         return;
@@ -98,8 +98,8 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         const handledReminder = await handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db);
         if (handledReminder) return;
 
-        // 🌦️ 3. 天氣即時播報
-        const handledWeather = await handleWeatherCommand(sock, m, remoteJid, messageContent);
+        // 🌦️ 3. 天氣即時播報 (傳入 db，讓 AI 擁有天氣記憶)
+        const handledWeather = await handleWeatherCommand(sock, m, remoteJid, messageContent, db, senderName);
         if (handledWeather) return;
 
         // 📍 4. 互動式搵食精靈 (省錢精準 Call API)
@@ -109,9 +109,9 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         // 🎮 5. 遊戲專區 (純文字選單)
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
             const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
-                             `• !運勢 ── 今日塔羅牌運勢占卜 (78張牌自行抽牌)\n` +
-                             `• !海龜湯 [簡單/normal] ── 啟動懸疑海龜湯推理\n` +
-                             `• !猜人名 ── 發起猜人名限時投票模式`;
+                           `• !運勢 ── 今日塔羅牌運勢占卜 (78張牌自行抽牌)\n` +
+                           `• !海龜湯 [簡單/normal] ── 啟動懸疑海龜湯推理\n` +
+                           `• !猜人名 ── 發起猜人名限時投票模式`;
             await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
             return;
         }
