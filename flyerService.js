@@ -1,27 +1,31 @@
 // ==========================================
-// 🌸 花農群專用服務模組 (flyerService.js) - 具備二次確認機制
+// 🌸 花農群專用服務模組 (flyerService.js) - 三層智慧辨識 (ID ➔ 電話 ➔ 名字)
 // ==========================================
 const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
 const userRecentMessages = {};
 
-// 🛡️ 暫存待確認的危險操作：key = senderPhone, value = { type, target, expiresAt }
+// 🛡️ 暫存待確認的危險操作：key = 識別用key, value = { type, target, expiresAt }
 const pendingActions = {};
 
 async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, messageContent, homeworkData, saveHomeworkData, backupHomeworkData, db, ai, scheduleMultipleDeletions) {
     
+    // 🛡️ 取得發言者的真實 WhatsApp ID 與電話
+    const senderJid = m.key.participant || m.key.remoteJid;
+    const actionKey = senderJid || senderPhone || senderName;
+
     // 🛡️ 處理二次確認指令：!確認 (支援容錯空格)
     const isConfirmCmd = /^[!！]\s*確認$/.test(messageContent);
     if (isConfirmCmd) {
-        const pending = pendingActions[senderPhone];
+        const pending = pendingActions[actionKey];
         if (!pending || Date.now() > pending.expiresAt) {
-            delete pendingActions[senderPhone];
+            delete pendingActions[actionKey];
             await sock.sendMessage(remoteJid, { text: `⚠️ 目前沒有需要你確認的待執行操作，或確認時間已過期。` }, { quoted: m });
             return;
         }
 
         // 清除暫存
-        delete pendingActions[senderPhone];
+        delete pendingActions[actionKey];
 
         if (pending.type === 'delete_user') {
             const name = pending.target;
@@ -46,20 +50,17 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         return;
     }
 
-    // 1. 綁定 ID
+    // 1. 綁定 ID (保留指令供手動校正用)
     const isIdCmd = /^[!！]\s*id$/.test(messageContent);
     if (isIdCmd) {
-        if (!senderPhone) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的電話號碼請稍後再試。` }, { quoted: m });
-            return;
-        }
         let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === senderName.toLowerCase());
         if (matchedName) {
-            homeworkData[matchedName].phone = senderPhone;
+            homeworkData[matchedName].id = senderJid;
+            if (senderPhone) homeworkData[matchedName].phone = senderPhone;
             await saveHomeworkData(homeworkData);
-            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已記錄資訊：${matchedName} (電話：${senderPhone})` }, { quoted: m });
+            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已成功綁定資料：${matchedName}` }, { quoted: m });
         } else {
-            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已記錄資訊：${senderName} (電話：${senderPhone})，未在名單中找到同名記錄。` }, { quoted: m });
+            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已記錄你的 ID 與電話，未在名單中找到同名記錄。` }, { quoted: m });
         }
         return;
     }
@@ -69,7 +70,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         const name = messageContent.replace(/^[!！]\s*ai加人/, '').trim();
         if (name) {
             await backupHomeworkData();
-            homeworkData[name] = { phone: "", flower: false, q1: false, q2: false };
+            homeworkData[name] = { id: "", phone: "", flower: false, q1: false, q2: false };
             await saveHomeworkData(homeworkData);
             await sock.sendMessage(remoteJid, { text: `✅ 已成功新增成員「${name}」！\n\n` + generateHomeworkReport(homeworkData) });
         }
@@ -84,12 +85,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             return;
         }
 
-        if (!senderPhone) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的發送者電話，請先在群內輸入 !id 綁定！` }, { quoted: m });
-            return;
-        }
-
-        pendingActions[senderPhone] = {
+        pendingActions[actionKey] = {
             type: 'delete_user',
             target: name,
             expiresAt: Date.now() + 30000
@@ -104,7 +100,11 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     // 5. 清除記錄
     if (/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/.test(messageContent)) {
         const name = messageContent.replace(/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/, '').trim();
-        let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === name.toLowerCase()) || name;
+        
+        // 清理名稱輔助
+        const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+        let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(name)) || name;
+
         if (homeworkData[matchedName]) {
             await backupHomeworkData();
             homeworkData[matchedName].flower = false;
@@ -124,18 +124,21 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
 
         for (const [name, status] of Object.entries(homeworkData)) {
             if (!status.flower && !status.q1 && !status.q2) {
-                if (status.phone) {
+                if (status.id) {
+                    mentions.push(status.id);
+                    pendingPeopleText.push(`• @${status.id.split('@')[0]} (${name})`);
+                } else if (status.phone) {
                     const targetJid = `${status.phone}@s.whatsapp.net`;
                     mentions.push(targetJid);
                     pendingPeopleText.push(`• @${status.phone} (${name})`);
                 } else {
-                    pendingPeopleText.push(`• ${name} ⚠️(未打 !id)`);
+                    pendingPeopleText.push(`• ${name}`);
                 }
             }
         }
 
         let text = `🔔 【功課催繳提醒】\n\n以下皮友本期尚未完成功課：\n` + (pendingPeopleText.length > 0 ? pendingPeopleText.join('\n') : `🎉 全員已完成！`);
-        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！\n💡 還未綁定的皮友，請在群裡輸入「!id」即可完成綁定！`;
+        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！`;
         await sock.sendMessage(remoteJid, { text, mentions }, { quoted: m });
         return;
     }
@@ -147,15 +150,10 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         return;
     }
 
-    // 🔄 整期重置（支援空格與多種寫法）
+    // 🔄 整期重置
     const isResetAllCmd = /^[!！]\s*(ai整期重置|ai清空全部|整期重置|清空全部)$/.test(messageContent);
     if (isResetAllCmd) {
-        if (!senderPhone) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 無法識別你的電話號碼，請先在群內輸入 !id 綁定！` }, { quoted: m });
-            return;
-        }
-
-        pendingActions[senderPhone] = {
+        pendingActions[actionKey] = {
             type: 'reset_all',
             expiresAt: Date.now() + 30000
         };
@@ -166,7 +164,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         return;
     }
 
-    // 8. 座標與功課自動審核計時器
+    // 8. 座標與功課自動審核計時器（三層遞進式比對：ID ➔ 電話 ➔ 名字）
     if (!userRecentMessages[senderName]) {
         userRecentMessages[senderName] = { text: '', messageIds: [] };
     }
@@ -176,16 +174,57 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     if (userRecentMessages[senderName].timer) clearTimeout(userRecentMessages[senderName].timer);
 
     const currentSender = senderName;
+    const currentJid = senderJid;
+    const currentPhone = senderPhone;
     const accumulatedText = userRecentMessages[currentSender].text;
     const accumulatedMsgIds = [...userRecentMessages[currentSender].messageIds];
 
     userRecentMessages[currentSender].timer = setTimeout(async () => {
         try {
             const result = await aiCheckHomeworkAdvanced(accumulatedText, ai);
-            let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === currentSender.toLowerCase()) || currentSender;
             
-            if (!homeworkData[matchedName]) {
-                homeworkData[matchedName] = { phone: senderPhone, flower: false, q1: false, q2: false };
+            const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+            let matchedName = null;
+
+            // 🔍 【第一優先】先用 WhatsApp ID (senderJid) 尋找
+            if (currentJid) {
+                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].id === currentJid);
+            }
+
+            // 🔍 【第二優先】如果 ID 找不到，改用電話號碼 (senderPhone) 尋找
+            if (!matchedName && currentPhone) {
+                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].phone === currentPhone);
+            }
+
+            // 🔍 【第三優先】如果電話也找不到，最後才用名字（支援忽略符號與大小寫模糊比對）尋找
+            if (!matchedName) {
+                matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(currentSender));
+            }
+
+            if (!matchedName) {
+                // 如果三層都找不到，直接以當前發言名字新增一筆
+                matchedName = currentSender;
+                homeworkData[matchedName] = { id: currentJid || "", phone: currentPhone || "", flower: false, q1: false, q2: false };
+            } else {
+                // 💡 如果找到了舊資料，但成員改名或加了符號，自動把 key 更新成最新帶符號的名字
+                if (matchedName !== currentSender && !homeworkData[currentSender]) {
+                    await backupHomeworkData();
+                    homeworkData[currentSender] = { 
+                        ...homeworkData[matchedName], 
+                        id: currentJid || homeworkData[matchedName].id, 
+                        phone: currentPhone || homeworkData[matchedName].phone 
+                    };
+                    delete homeworkData[matchedName];
+                    matchedName = currentSender;
+                }
+
+                // 自動補齊 ID 與 Phone
+                if (currentJid && !homeworkData[matchedName].id) {
+                    homeworkData[matchedName].id = currentJid;
+                }
+                if (currentPhone && !homeworkData[matchedName].phone) {
+                    homeworkData[matchedName].phone = currentPhone;
+                }
             }
 
             const alreadyCompleted = homeworkData[matchedName].flower || homeworkData[matchedName].q1 || homeworkData[matchedName].q2;
@@ -204,10 +243,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                     else homeworkData[matchedName].q2 = true;
                 }
 
-                if (senderPhone && !homeworkData[matchedName].phone) {
-                    homeworkData[matchedName].phone = senderPhone;
-                }
-
                 await saveHomeworkData(homeworkData);
 
                 if (alreadyCompleted) {
@@ -219,10 +254,11 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                 await scheduleMultipleDeletions(remoteJid, accumulatedMsgIds, m.key.participant || remoteJid, 50 * 60 * 1000);
             }
         } catch (e) {
+            console.error('❌ 處理功課計時器錯誤:', e);
         } finally {
             delete userRecentMessages[currentSender];
         }
-    }, 60000);
+    }, 15000); // 15秒快速響應
 }
 
 module.exports = { handleFlyerMessage };
