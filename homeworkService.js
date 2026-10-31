@@ -52,24 +52,28 @@ function generateHomeworkReport(homeworkData) {
 
 async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
     try {
-        const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請忽視閒聊、打菇、時區等無效內容，專注檢查經緯度座標與花名。
-花名定義：包含任何真實花名以及遊戲常見俗稱（如變異、紅主、藍主、黃主、混色、鼠尾草、白花等）。
-審核規則：
-1. 「FLOWER」：含花名或俗稱，且同時有 3 個或以上經緯度座標。
-2. 「FORCE_OPEN_FULL」：含「強開」或白花名稱，且剛好包含 2 個或以上經緯度座標。
-3. 「FORCE_OPEN_NEED_MORE」：含「強開」或白花名稱，但僅有 1 個經緯度座標。
-4. 「NEED_FLOWER_NAME」：完全沒有提及花名，但發送了 3 個或以上座標。
-5. 「NONE」：不符合。
-訊息：\n"""\n${combinedMessageText}\n"""\n請嚴格回傳：FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
+        const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請分析訊息中是否包含「種花」或「強開」的功課內容。
+判斷標準：
+1. 「FLOWER」：只要訊息中含有任何花名、俗稱（如睡蓮、混色、紅主等），或是包含「首開」、「最後」、「x16」等種花/苗數相關字眼，且附有經緯度座標。
+2. 「FORCE_OPEN_FULL」：訊息中含有「強開」、白花、或標註多個點位進行開花的座標記錄。
+3. 「NEED_FLOWER_NAME」：有發送座標，但完全沒有寫明任何花名或相關字眼。
+4. 「NONE」：完全無關的閒聊。
+
+訊息內容：\n"""\n${combinedMessageText}\n"""\n請嚴格只回傳以下其中一個關鍵字：FLOWER / FORCE_OPEN_FULL / NEED_FLOWER_NAME / NONE`;
 
         const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-        const result = response.text ? response.text.trim() : 'NONE';
+        const result = response.text ? response.text.trim().toUpperCase() : 'NONE';
+        
+        console.log('🤖 AI 審核結果:', result); // 方便在 Render Log 觀察
+
         if (result.includes('FLOWER')) return 'flower';
         if (result.includes('FORCE_OPEN_FULL')) return 'force_open_full';
-        if (result.includes('FORCE_OPEN_NEED_MORE')) return 'force_open_need_more';
         if (result.includes('NEED_FLOWER_NAME')) return 'need_flower_name';
         return null;
-    } catch (e) { return null; }
+    } catch (e) { 
+        console.error('❌ AI 審核發生錯誤:', e);
+        return null; 
+    }
 }
 
 module.exports = {
