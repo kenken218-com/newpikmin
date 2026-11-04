@@ -1,5 +1,5 @@
 // ==========================================
-// 🌸 花農群專用服務模組 (flyerService.js) [帶 ! 觸發新手引導版]
+// 🌸 花農群專用服務模組 (flyerService.js) [語法修復與防呆終極版]
 // ==========================================
 const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
@@ -66,20 +66,20 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 2. 🌸 手動修改成員功課記錄指令：!修改記錄 成員名 狀態
-    // 🛡️ 修正：兼容「記錄」與「紀錄」，並支援中英文狀態
+    // 🛡️ 修正：兼容「記錄」與「紀錄」，並支援「種花」等中文字
     if (/^[!！]\s*修改(記|紀)錄?/.test(messageContent)) {
         const rawParam = messageContent.replace(/^[!！]\s*修改(記|紀)錄?/, '').trim();
         const parts = rawParam.split(/\s+/);
-    
+        
         if (parts.length < 2) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 格式錯誤！請使用：\n!修改記錄 [成員名字] [狀態]\n(狀態可填: 🌸/種花, q1/1, q2/2, 未完成/清空)` }, { quoted: m });
+            await sock.sendMessage(remoteJid, { text: `⚠️ 格式錯誤！請使用：\n!修改記錄 [成員名字] [狀態]\n(狀態可填: 🌸/種花, 1, 2, 未完成)` }, { quoted: m });
             return;
         }
 
         const targetNameQuery = parts[0];
         const statusQuery = parts[1].toLowerCase();
 
-        // 🛡️ 清理符號進行模糊匹配（解決名字有 ~ 或空格等問題）
+        // 🛡️ 清理符號進行模糊匹配
         const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
         let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(targetNameQuery));
 
@@ -90,7 +90,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
 
         await backupHomeworkData();
 
-        // 🛡️ 狀態判斷優化：加入更多關鍵字
         if (statusQuery.includes('🌸') || statusQuery.includes('種花') || statusQuery.includes('flower') || statusQuery === '花') {
             homeworkData[matchedName].flower = true;
             homeworkData[matchedName].q1 = false;
@@ -98,11 +97,11 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         } else if (statusQuery === 'q1' || statusQuery === '1' || statusQuery.includes('強開1')) {
             homeworkData[matchedName].q1 = true;
             homeworkData[matchedName].flower = false;
-            homeworkData[matchedName].q2 = false; // 確保互斥
+            homeworkData[matchedName].q2 = false;
         } else if (statusQuery === 'q2' || statusQuery === '2' || statusQuery.includes('強開2')) {
             homeworkData[matchedName].q2 = true;
             homeworkData[matchedName].flower = false;
-            homeworkData[matchedName].q1 = false; // 確保互斥
+            homeworkData[matchedName].q1 = false;
         } else if (statusQuery.includes('未完成') || statusQuery.includes('清空') || statusQuery === '0' || statusQuery.includes('取消')) {
             homeworkData[matchedName].flower = false;
             homeworkData[matchedName].q1 = false;
@@ -116,32 +115,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         await sock.sendMessage(remoteJid, { text: `✅ 已成功將成員「${matchedName}」的功課狀態更新為「${parts[1]}」！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
         return;
     }
-
-            await backupHomeworkData();
-
-            if (statusQuery.includes('🌸') || statusQuery.includes('種花') || statusQuery.includes('flower')) {
-                homeworkData[matchedName].flower = true;
-                homeworkData[matchedName].q1 = false;
-                homeworkData[matchedName].q2 = false;
-            } else if (statusQuery === 'q1' || statusQuery === '1') {
-                homeworkData[matchedName].q1 = true;
-                homeworkData[matchedName].flower = false;
-            } else if (statusQuery === 'q2' || statusQuery === '2') {
-                homeworkData[matchedName].q2 = true;
-                homeworkData[matchedName].flower = false;
-            } else if (statusQuery.includes('未完成') || statusQuery.includes('清空') || statusQuery.includes('0')) {
-                homeworkData[matchedName].flower = false;
-                homeworkData[matchedName].q1 = false;
-                homeworkData[matchedName].q2 = false;
-            } else {
-                await sock.sendMessage(remoteJid, { text: `❌ 無效的狀態指令！支援的狀態：🌸 (種花)、q1 / q2 (強開)、未完成` }, { quoted: m });
-                return;
-            }
-
-            await saveHomeworkData(homeworkData);
-            await sock.sendMessage(remoteJid, { text: `✅ 已成功將成員「${matchedName}」的功課狀態更新！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
-            return;
-        }
 
     // 3. 加人
     if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人') || messageContent.startsWith('! ai加人') || messageContent.startsWith('！ ai加人')) {
