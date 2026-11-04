@@ -1,5 +1,5 @@
 // ==========================================
-// 📨 訊息事件路由與處理器 (messageHandler.js)
+// 📨 訊息事件路由與處理器 (messageHandler.js) [完全整合修正版]
 // ==========================================
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const { handleFlyerMessage } = require('./flyerService');
@@ -41,7 +41,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     const senderName = m.pushName || '成員';
     const isGroup = remoteJid.endsWith('@g.us');
 
-    // 1. 群組專屬動態指令手冊 (純文字極速回應) - 包含完整教學與容錯說明
+    // 1. 群組專屬動態指令手冊 (純文字極速回應)
     if (messageContent === '!指令' || messageContent === '！指令' || messageContent.toLowerCase() === '!help') {
         if (remoteJid === GROUPS.FLYER) {
             const flyerHelp = `🌸 【花農群 (Flyer) 專用指令與操作手冊】\n\n` +
@@ -60,9 +60,10 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         } else {
             const cafeHelp = `☕ 【咖啡室群 互動指令手冊】\n\n` +
                              `🎮 \`!遊戲\` ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
-                             `🌤️ \`!天氣\` ── 即時天氣播報\n` +
+                             `🌤️ \`!天氣\` / \`!聽日落雨咩\` ── 智慧天文台氣象對答\n` +
                              `🍔 \`!搵食\` ── 搜尋餐廳地標\n` +
-                             `⏰ \`!提醒我 [時間] [內容]\` ── 設定個人提醒\n` +
+                             `⏰ \`!提我 2分鐘後睡覺\` ── 自然語言設定提醒\n` +
+                             `📋 \`!我的提醒\` ── 查看 / 取消設定中的提醒\n` +
                              `💬 \`![說話內容]\` ── 直接跟皮皮小管家對話`;
             await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
         }
@@ -99,8 +100,8 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
 
     if (isAllowedAIgroup && isGroup) {
 
-        // ⏰ 2. 自訂提醒指令 (限 Coffee 群處理)
-        const handledReminder = await handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db);
+        // ⏰ 2. AI 智慧自訂提醒指令 (🛡️ 補上 ai 參數)
+        const handledReminder = await handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db, ai);
         if (handledReminder) return;
 
         // 🌦️ 3. 天氣即時播報與 AI 智慧對答 (傳入 db 與 ai)
@@ -205,7 +206,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                     nameGameSession.secretMasterName = senderName;
                     nameGameSession.targetName = role;
                     nameGameSession.step = 'playing';
-                     
+                      
                     await sock.sendMessage(remoteJid, { text: `✅ 設定成功！你已成為本局的秘密主持人。你的角色是：**${role}**。請回到群組一起互動，別洩漏答案喔！` });
 
                     if (nameGameSession.activeGroupJid) {
@@ -219,13 +220,19 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     }
 
     // ==========================================
-    // 🤖 一般 AI 聊天
+    // 🤖 一般 AI 聊天 (過濾保留字)
     // ==========================================
     if (isAllowedAIgroup && isGroup) {
         const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
         if (isCommand && messageContent.length > 1) {
             const query = messageContent.substring(1).trim();
-            const reservedCommands = ['指令', '遊戲', '運勢', '海龜湯', '猜人名', '主題', '出題', '扮演', '提醒我', '天氣', '天文台', '搵食', '餐廳'];
+            // 🛡️ 擴充保留字清單，涵蓋提醒與天氣的各種自然發問方式
+            const reservedCommands = [
+                '指令', '遊戲', '運勢', '海龜湯', '猜人名', '主題', '出題', '扮演', 
+                '提醒', '提我', '記得提', '幫我記', '話我知', '我的提醒', '取消提醒',
+                '天氣', '天文台', '氣溫', '溫度', '落雨', '下雨', '降雨', '幾度', '聽日', '明天',
+                '搵食', '餐廳'
+            ];
             if (!reservedCommands.some(cmd => query.startsWith(cmd))) {
                 setImmediate(() => {
                     processAIChat(sock, remoteJid, senderName, query, m, db, ai);
