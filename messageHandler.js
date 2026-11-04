@@ -232,7 +232,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                 '指令', '遊戲', '運勢', '海龜湯', '猜人名', '主題', '出題', '扮演', 
                 '提醒', '提我', '記得提', '幫我記', '話我知', '我的提醒', '取消提醒',
                 '天氣', '天文台', '氣溫', '溫度', '落雨', '下雨', '降雨', '幾度', '聽日', '明天',
-                '搵食', '餐廳', '換一批', '下一頁', '睇多幾間', '查', '搵'
+                '搵食', '餐廳', '換一批', '下一頁', '睇多幾間'
             ];
             if (!reservedCommands.some(cmd => query.startsWith(cmd))) {
                 setImmediate(() => {
