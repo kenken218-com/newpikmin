@@ -103,8 +103,8 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         const handledReminder = await handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db);
         if (handledReminder) return;
 
-        // 🌦️ 3. 天氣即時播報 (傳入 db，讓 AI 擁有天氣記憶)
-        const handledWeather = await handleWeatherCommand(sock, m, remoteJid, messageContent, db, senderName);
+        // 🌦️ 3. 天氣即時播報與 AI 智慧對答 (傳入 db 與 ai)
+        const handledWeather = await handleWeatherCommand(sock, m, remoteJid, messageContent, db, ai, senderName);
         if (handledWeather) return;
 
         // 📍 4. 互動式搵食精靈 (省錢精準 Call API)
