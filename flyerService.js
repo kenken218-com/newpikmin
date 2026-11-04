@@ -1,5 +1,5 @@
 // ==========================================
-// 🌸 花農群專用服務模組 (flyerService.js) - 具備雙軌防撞、ID/電話/名稱三層辨識與手動修改
+// 🌸 花農群專用服務模組 (flyerService.js) [帶 ! 觸發新手引導版]
 // ==========================================
 const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
@@ -297,6 +297,16 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                 }
 
                 await scheduleMultipleDeletions(remoteJid, accumulatedMsgIds, m.key.participant || remoteJid, 50 * 60 * 1000);
+            } else {
+                // 💡 【核心修改】只有當累積訊息以 ! 或 ！ 開頭（代表成員嘗試輸入指令卻打錯/無效）時，才給予溫馨引導提醒
+                const isAttemptingCommand = accumulatedText.trim().startsWith('!') || accumulatedText.trim().startsWith('！');
+
+                if (!alreadyCompleted && isAttemptingCommand) {
+                    await sock.sendMessage(remoteJid, { 
+                        text: `🌱 哎呀 @${currentSender}，小助手睇唔太明哩個指令喎～\n如果是第一次交功課或唔知點樣打，可以隨時輸入 **!指令** 查看花農群操作手冊喔！`,
+                        mentions: [senderJid]
+                    }, { quoted: m });
+                }
             }
         } catch (e) {
             console.error('❌ 處理功課計時器錯誤:', e);
