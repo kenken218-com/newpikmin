@@ -1,10 +1,9 @@
 // ==========================================
-// ⏰ AI 智慧個人提醒服務 (reminderService.js) [雙向確認防呆版]
+// ⏰ AI 智慧個人提醒服務 (reminderService.js) [完整管理版]
 // ==========================================
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const dbService = require('./dbService');
 
-// 🛡️ 暫存等待確認的提醒（key: senderJid，value: 提醒資料與計時器）
 let pendingReminders = {};
 
 async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db, ai) {
@@ -19,11 +18,68 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
     const cleanMsg = messageContent.trim();
     const activeDb = db || dbService.db;
 
-    // 1️⃣ 攔截成員的「!確認」回覆
+    // 1️⃣ 查看我的提醒列表 (!我的提醒 / !提醒列表)
+    if (cleanMsg === '!我的提醒' || cleanMsg === '！我的提醒' || cleanMsg === '!提醒列表' || cleanMsg === '！提醒列表') {
+        if (!activeDb) {
+            await sock.sendMessage(remoteJid, { text: `❌ 資料庫未連線。` }, { quoted: m });
+            return true;
+        }
+        try {
+            const myReminders = await activeDb.collection('reminders').find({ senderJid }).sort({ remindAt: 1 }).toArray();
+            if (myReminders.length === 0) {
+                await sock.sendMessage(remoteJid, { text: `🌱 你目前沒有任何設定中的待辦提醒喔！` }, { quoted: m });
+                return true;
+            }
+
+            let listText = `📋 **【你目前的待辦提醒列表】**\n`;
+            myReminders.forEach((r, idx) => {
+                const timeStr = new Date(r.remindAt).toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour12: false });
+                listText += `\n${idx + 1}. ⏰ **${timeStr}**\n   📝 「${r.message}」`;
+            });
+            listText += `\n\n💡 如果想取消某個提醒，請輸入 \`!取消提醒 [編號]\`（例如：\`!取消提醒 1\`）`;
+            await sock.sendMessage(remoteJid, { text: listText }, { quoted: m });
+        } catch (e) {
+            console.error('❌ 查詢提醒列表失敗:', e);
+            await sock.sendMessage(remoteJid, { text: `❌ 查詢失敗，請稍後再試！` }, { quoted: m });
+        }
+        return true;
+    }
+
+    // 2️⃣ 取消特定提醒 (!取消提醒 [編號])
+    if (cleanMsg.startsWith('!取消提醒') || cleanMsg.startsWith('！取消提醒')) {
+        if (!activeDb) {
+            await sock.sendMessage(remoteJid, { text: `❌ 資料庫未連線。` }, { quoted: m });
+            return true;
+        }
+        try {
+            const arg = cleanMsg.replace(/^[!！]取消提醒\s*/, '').trim();
+            const index = parseInt(arg, 10);
+            if (isNaN(index) || index <= 0) {
+                await sock.sendMessage(remoteJid, { text: `⚠️ 請輸入正確的編號！例如：\`!取消提醒 1\`\n（提示：可先輸入 \`!我的提醒\` 查看清單與編號）` }, { quoted: m });
+                return true;
+            }
+
+            const myReminders = await activeDb.collection('reminders').find({ senderJid }).sort({ remindAt: 1 }).toArray();
+            if (index > myReminders.length) {
+                await sock.sendMessage(remoteJid, { text: `⚠️ 找不到編號 ${index} 的提醒！請先輸入 \`!我的提醒\` 確認清單。` }, { quoted: m });
+                return true;
+            }
+
+            const target = myReminders[index - 1];
+            await activeDb.collection('reminders').deleteOne({ _id: target._id });
+            await sock.sendMessage(remoteJid, { text: `✅ 已經成功幫你取消提醒：\n「${target.message}」` }, { quoted: m });
+        } catch (e) {
+            console.error('❌ 取消提醒失敗:', e);
+            await sock.sendMessage(remoteJid, { text: `❌ 取消失敗，請稍後再試！` }, { quoted: m });
+        }
+        return true;
+    }
+
+    // 3️⃣ 攔截成員的「!確認」回覆
     if (cleanMsg === '!確認' || cleanMsg === '！確認') {
         if (pendingReminders[senderJid]) {
             const pending = pendingReminders[senderJid];
-            clearTimeout(pending.timer); // 清除 30 秒過期計時器
+            clearTimeout(pending.timer);
             delete pendingReminders[senderJid];
 
             if (!activeDb) {
@@ -51,10 +107,10 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             }
             return true;
         }
-        return false; // 如果沒有待確認的提醒，就讓其他邏輯處理
+        return false;
     }
 
-    // 2️⃣ 攔截成員的「!取消」回覆
+    // 4️⃣ 攔截成員的「!取消」回覆（放棄當前 30 秒內的暫存確認）
     if (cleanMsg === '!取消' || cleanMsg === '！取消') {
         if (pendingReminders[senderJid]) {
             clearTimeout(pendingReminders[senderJid].timer);
@@ -65,7 +121,7 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         return false;
     }
 
-    // 3️⃣ 檢查是否為新提醒指令
+    // 5️⃣ 檢查是否為新提醒指令
     const hasPrefix = /^[!！]/.test(messageContent);
     const reminderKeywords = ['提醒', '提我', '記得提', '幫我記', '話我知'];
     const cleanQuery = messageContent.replace(/^[!！]\s*/, '').trim();
@@ -119,17 +175,14 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Hong_Kong' 
         });
 
-        // 🛡️ 清除該成員舊的未確認計時器（如果有的話）
         if (pendingReminders[senderJid]) {
             clearTimeout(pendingReminders[senderJid].timer);
         }
 
-        // ⏳ 設定 30 秒逾期自動清除暫存
         const timer = setTimeout(() => {
             delete pendingReminders[senderJid];
         }, 30000);
 
-        // 📌 暫存起來，等待成員回覆 !確認
         pendingReminders[senderJid] = {
             remoteJid,
             message: parsed.message,
@@ -138,7 +191,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             timer
         };
 
-        // 📤 發送確認預覽邀請
         await sock.sendMessage(remoteJid, { 
             text: `🌱 **【請確認提醒內容】**\n⏰ 時間：${parsed.timeDescription} (約 ${timeFormatted})\n📝 內容：${parsed.message}\n\n💡 請在 **30 秒內** 回覆 **!確認** 嚟完成設定，或回覆 **!取消** 嚟放棄！` 
         }, { quoted: m });
@@ -177,6 +229,7 @@ function startReminderChecker(sock, db, getIsConnected) {
                 } catch (err) {
                     console.error('❌ 發送提醒通知失敗:', err);
                 }
+                // 🧹 觸發後立刻從資料庫刪除，絕不佔用空間！
                 await collection.deleteOne({ _id: rem._id });
             }
         } catch (e) {
