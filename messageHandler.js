@@ -14,7 +14,7 @@ const {
 } = require('./games');
 const { processAIChat } = require('./aiService');
 
-// 🛡️ 引入新擴充服務
+// 🛡️ 引入擴充服務
 const { handleWeatherCommand } = require('./weatherService');
 const { handlePlacesWizard } = require('./placesService');
 const { handleReminderCommand } = require('./reminderService');
@@ -61,7 +61,8 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
             const cafeHelp = `☕ 【咖啡室群 互動指令手冊】\n\n` +
                              `🎮 \`!遊戲\` ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
                              `🌤️ \`!天氣\` / \`!聽日落雨咩\` ── 智慧天文台氣象對答\n` +
-                             `🍔 \`!搵食\` ── 搜尋餐廳地標\n` +
+                             `🍔 \`!搵食\` / \`!銅鑼灣日本嘢\` ── 智慧地標搜尋\n` +
+                             `🔄 \`!換一批\` ── 檢視更多餐廳選項 (10分鐘內有效)\n` +
                              `⏰ \`!提我 2分鐘後睡覺\` ── 自然語言設定提醒\n` +
                              `📋 \`!我的提醒\` ── 查看 / 取消設定中的提醒\n` +
                              `💬 \`![說話內容]\` ── 直接跟皮皮小管家對話`;
@@ -100,7 +101,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
 
     if (isAllowedAIgroup && isGroup) {
 
-        // ⏰ 2. AI 智慧自訂提醒指令 (🛡️ 補上 ai 參數)
+        // ⏰ 2. AI 智慧自訂提醒指令 (傳入 db 與 ai)
         const handledReminder = await handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db, ai);
         if (handledReminder) return;
 
@@ -108,8 +109,8 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         const handledWeather = await handleWeatherCommand(sock, m, remoteJid, messageContent, db, ai, senderName);
         if (handledWeather) return;
 
-        // 📍 4. 互動式搵食精靈 (省錢精準 Call API)
-        const handledPlaces = await handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, messageContent);
+        // 📍 4. 互動式搵食精靈 (🛡️ 關鍵修復：補傳 db 參數，確保 Places API 結果寫入對話記憶)
+        const handledPlaces = await handlePlacesWizard(sock, m, remoteJid, senderJid, senderName, messageContent, db);
         if (handledPlaces) return;
 
         // 🎮 5. 遊戲專區 (純文字選單)
@@ -226,12 +227,12 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
         if (isCommand && messageContent.length > 1) {
             const query = messageContent.substring(1).trim();
-            // 🛡️ 擴充保留字清單，涵蓋提醒與天氣的各種自然發問方式
+            // 🛡️ 擴充保留字清單（新增換一批相關關鍵字）
             const reservedCommands = [
                 '指令', '遊戲', '運勢', '海龜湯', '猜人名', '主題', '出題', '扮演', 
                 '提醒', '提我', '記得提', '幫我記', '話我知', '我的提醒', '取消提醒',
                 '天氣', '天文台', '氣溫', '溫度', '落雨', '下雨', '降雨', '幾度', '聽日', '明天',
-                '搵食', '餐廳'
+                '搵食', '餐廳', '換一批', '下一頁', '睇多幾間'
             ];
             if (!reservedCommands.some(cmd => query.startsWith(cmd))) {
                 setImmediate(() => {
