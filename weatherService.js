@@ -16,9 +16,10 @@ async function handleWeatherCommand(sock, m, remoteJid, messageContent, db, ai, 
 
     // 🧠 智慧自然語言意圖判斷
     const hasPrefix = /^[!！]/.test(messageContent);
+    // 將原本的 weatherKeywords 移除 '今日', '現在', '聽日', '明天'
     const weatherKeywords = [
         '天氣', '天文台', '氣溫', '溫度', '落雨', '下雨', '降雨', '濕度', 
-        '幾度', '遮', '雨傘', '冷', '熱', '預報', '聽日', '明天', '今日', '現在'
+        '幾度', '遮', '雨傘', '冷', '熱', '預報'
     ];
     const cleanQuery = messageContent.replace(/^[!！]\s*/, '').trim();
     const containsKeyword = weatherKeywords.some(keyword => cleanQuery.includes(keyword));
