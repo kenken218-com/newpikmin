@@ -1,5 +1,5 @@
 // ==========================================
-// ⏰ AI 智慧個人提醒服務 (reminderService.js) [時區與跨日修復版]
+// ⏰ AI 智慧個人提醒服務 (reminderService.js) [終極防呆優化版]
 // ==========================================
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const dbService = require('./dbService');
@@ -7,7 +7,6 @@ const dbService = require('./dbService');
 let pendingReminders = {};
 
 async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone, senderName, messageContent, db, ai) {
-    // 🛡️ 允許在 Cafe、Admin、Rice 群使用提醒功能
     const isAllowedGroup = (
         remoteJid === GROUPS.CAFE || 
         remoteJid === GROUPS.ADMIN || 
@@ -18,8 +17,8 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
     const cleanMsg = messageContent.trim();
     const activeDb = db || dbService.db;
 
-    // 1️⃣ 查看我的提醒列表 (!我的提醒 / !提醒列表)
-    if (cleanMsg === '!我的提醒' || cleanMsg === '！我的提醒' || cleanMsg === '!提醒列表' || cleanMsg === '！提醒列表') {
+    // 1️⃣ 查看我的提醒列表
+    if (['!我的提醒', '！我的提醒', '!提醒列表', '！提醒列表'].includes(cleanMsg)) {
         if (!activeDb) {
             await sock.sendMessage(remoteJid, { text: `❌ 資料庫未連線。` }, { quoted: m });
             return true;
@@ -45,7 +44,7 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         return true;
     }
 
-    // 2️⃣ 取消特定提醒 (!取消提醒 [編號])
+    // 2️⃣ 取消特定提醒
     if (cleanMsg.startsWith('!取消提醒') || cleanMsg.startsWith('！取消提醒')) {
         if (!activeDb) {
             await sock.sendMessage(remoteJid, { text: `❌ 資料庫未連線。` }, { quoted: m });
@@ -89,7 +88,7 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
 
             try {
                 await activeDb.collection('reminders').insertOne({
-                    remoteJid: pending.remoteJid,
+                    remoteJid,
                     senderJid,
                     senderPhone,
                     senderName,
@@ -110,7 +109,7 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         return false;
     }
 
-    // 4️⃣ 攔截成員的「!取消」回覆（放棄當前 30 秒內的暫存確認）
+    // 4️⃣ 攔截成員的「!取消」回覆
     if (cleanMsg === '!取消' || cleanMsg === '！取消') {
         if (pendingReminders[senderJid]) {
             clearTimeout(pendingReminders[senderJid].timer);
@@ -133,7 +132,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' });
 
-        // 🤖 透過 Gemini 解析自然語言（強化時區與跨日邏輯）
         const prompt = `
 你是一個專業精準的智慧提醒助理。當前香港時間（HKT）是：${currentTimeStr}。
 請仔細解析以下使用者輸入的提醒要求，並嚴格以 JSON 格式回傳（不要包含任何 markdown 程式碼反引號，只要純 JSON）：
@@ -141,16 +139,16 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
 
 【時間計算嚴格規則】：
 1. 所有時間必須以香港時間 (UTC+8) 為基準進行計算。
-2. 如果使用者提到「聽日」、「明天」，請將日期正確計算為當前日期的隔天。
-3. 如果提到「朝早7點」、「早上7點」，時間應設定為當天或明天的 07:00:00。
+2. 如果使用者提到「聽朝」、「明早」、「明天早上」、「明天」，請將日期正確計算為當前日期的**隔天**。
+3. 如果使用者提到「後日」、「大後天」，請將日期正確計算為當前日期的**後兩天**。
 4. 絕對不能計算出小於當前時間的過去時間。
 
 請輸出以下 JSON 結構：
 {
-  "success": true 或 false (如果無法理解時間或內容則為 false),
-  "targetTime": "YYYY-MM-DDTHH:mm:ss.sssZ" (請根據上述規則計算出對應的絕對 ISO 時間，確保它是未來時間),
+  "success": true 或 false,
+  "targetTime": "YYYY-MM-DDTHH:mm:ss.sssZ" (請根據上述規則計算出對應的絕對 ISO 時間),
   "message": "提醒的具體事件內容",
-  "timeDescription": "一段給人類看的自然時間描述，例如：明天早上 7 點、兩分鐘後"
+  "timeDescription": "一段給人類看的自然時間描述"
 }
 `;
 
@@ -161,21 +159,36 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         });
 
         const rawText = response.text ? response.text.trim() : '';
-        const jsonString = rawText.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
-        const parsed = JSON.parse(jsonString);
+        
+        // 🛡️ 強化版 JSON 解析：直接抓取第一個 { 到最後一個 } 之間的字串
+        const match = rawText.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error("AI 未回傳有效的 JSON 格式");
+        const parsed = JSON.parse(match[0]);
 
         if (!parsed.success || !parsed.targetTime || !parsed.message) {
             await sock.sendMessage(remoteJid, { 
-                text: `⚠️ 哎呀！小管家聽唔太明你嘅提醒時間或內容～\n請試下咁講：\`!提醒我 兩分鐘後去飲水\` 或 \`!提醒我 聽日朝早7點起身\`` 
+                text: `⚠️ 哎呀！小管家聽唔太明你嘅提醒時間或內容～\n請試下咁講：\`!提醒我 兩分鐘後去飲水\` 或 \`!提醒我 聽朝7點起身\`` 
             }, { quoted: m });
             return true;
         }
 
         let remindAt = new Date(parsed.targetTime);
 
-        // 🛡️ 額外防呆：如果 AI 算出來的時間小於當前時間，但使用者明明說了「聽日/明天」，手動幫它加一天
-        if (remindAt <= now && (cleanQuery.includes('聽日') || cleanQuery.includes('明天'))) {
-            remindAt.setDate(remindAt.getDate() + 1);
+        // 🛡️ 【超級強力防呆】修正天數，但保留時分！
+        const hasAfterTomorrowKeyword = cleanQuery.includes('後日') || cleanQuery.includes('大後天');
+        const hasTomorrowKeyword = cleanQuery.includes('聽朝') || cleanQuery.includes('明早') || cleanQuery.includes('明天');
+
+        if (hasAfterTomorrowKeyword || hasTomorrowKeyword) {
+            const expectedDaysToAdd = hasAfterTomorrowKeyword ? 2 : 1;
+            
+            // 建立一個預期時間，只取「年、月、日」，時分秒沿用 AI 算出來的
+            let expectedDate = new Date(now.getTime() + expectedDaysToAdd * 24 * 60 * 60 * 1000);
+            expectedDate.setHours(remindAt.getHours(), remindAt.getMinutes(), 0, 0);
+
+            // 如果 AI 算出來的天數不對（例如算成了今天），我們才強制覆蓋日期
+            if (remindAt.getDate() !== expectedDate.getDate()) {
+                remindAt = expectedDate;
+            }
         }
 
         if (isNaN(remindAt.getTime()) || remindAt <= now) {
@@ -241,7 +254,6 @@ function startReminderChecker(sock, db, getIsConnected) {
                 } catch (err) {
                     console.error('❌ 發送提醒通知失敗:', err);
                 }
-                // 🧹 觸發後立刻從資料庫刪除，絕不佔用空間！
                 await collection.deleteOne({ _id: rem._id });
             }
         } catch (e) {
