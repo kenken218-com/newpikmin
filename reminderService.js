@@ -1,5 +1,5 @@
 // ==========================================
-// ⏰ AI 智慧個人提醒服務 (reminderService.js) [終極防呆優化版]
+// ⏰ AI 智慧個人提醒服務 (reminderService.js) [時區鎖定與排版完美版]
 // ==========================================
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const dbService = require('./dbService');
@@ -32,7 +32,11 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
 
             let listText = `📋 **【你目前的待辦提醒列表】**\n`;
             myReminders.forEach((r, idx) => {
-                const timeStr = new Date(r.remindAt).toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour12: false });
+                // 美化時間顯示
+                const parts = new Intl.DateTimeFormat('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(r.remindAt));
+                const findPart = (type) => parts.find(p => p.type === type).value;
+                const timeStr = `${findPart('year')}年${findPart('month')}月${findPart('day')}日 ${findPart('hour')}:${findPart('minute')}`;
+                
                 listText += `\n${idx + 1}. ⏰ **${timeStr}**\n    📝 「${r.message}」`;
             });
             listText += `\n\n💡 如果想取消某個提醒，請輸入 \`!取消提醒 [編號]\`（例如：\`!取消提醒 1\`）`;
@@ -130,37 +134,44 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
 
     try {
         const now = new Date();
-        const currentTimeStr = now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' });
+        // 獲取絕對精準的 HKT 當前時間字串
+        const currentTimeStr = now.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
 
         const prompt = `
 你是一個專業精準的智慧提醒助理。當前香港時間（HKT）是：${currentTimeStr}。
 請仔細解析以下使用者輸入的提醒要求，並嚴格以 JSON 格式回傳（不要包含任何 markdown 程式碼反引號，只要純 JSON）：
 使用者輸入："${cleanQuery}"
 
+【粵語時間詞彙解析規則】：
+- 「今晚」= 今日夜晚。
+- 「聽晚」/「明晚」= 明日夜晚。
+- 「後晚」= 後日夜晚。
+- 「夜晚 11 點」請務必轉換為 24 小時制（即 23:00）。
+- 「下午 3 點」請轉換為 15:00。
+- 「今晚 12 點」請視為明日的 00:00。
+
 【時間計算嚴格規則】：
 1. 所有時間必須以香港時間 (UTC+8) 為基準進行計算。
-2. 如果使用者提到「聽朝」、「明早」、「明天早上」、「明天」，請將日期正確計算為當前日期的**隔天**。
-3. 如果使用者提到「後日」、「大後天」，請將日期正確計算為當前日期的**後兩天**。
-4. 絕對不能計算出小於當前時間的過去時間。
+2. 如果使用者提到「聽朝」、「明早」、「聽日」、「明天」，請將日期計算為當前日期的**隔天**。
+3. 如果使用者提到「後日」、「大後天」、「後晚」，請計算為**後兩天**。
+4. 請輸出「香港時間」的字串格式，**不要加上 Z 或任何時區後綴**，格式必須為 "YYYY-MM-DDTHH:mm:ss"。
 
 請輸出以下 JSON 結構：
 {
   "success": true 或 false,
-  "targetTime": "YYYY-MM-DDTHH:mm:ss.sssZ" (請根據上述規則計算出對應的絕對 ISO 時間),
+  "targetTime": "YYYY-MM-DDTHH:mm:ss" (請嚴格依照上述要求輸出，例如 "2024-05-20T23:00:00"),
   "message": "提醒的具體事件內容",
   "timeDescription": "一段給人類看的自然時間描述"
 }
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.5-flash-lite',
+            model: 'gemini-1.5-flash', // 使用穩定支援的模型
             contents: prompt,
             config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
         });
 
         const rawText = response.text ? response.text.trim() : '';
-        
-        // 🛡️ 強化版 JSON 解析：直接抓取第一個 { 到最後一個 } 之間的字串
         const match = rawText.match(/\{[\s\S]*\}/);
         if (!match) throw new Error("AI 未回傳有效的 JSON 格式");
         const parsed = JSON.parse(match[0]);
@@ -172,33 +183,69 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             return true;
         }
 
-        let remindAt = new Date(parsed.targetTime);
+        // 🛡️ 【時區鎖定】強制將 AI 算出的時間視為香港時間 (+08:00)
+        let targetTimeStr = parsed.targetTime;
+        if (!targetTimeStr.includes('+') && !targetTimeStr.includes('Z')) {
+            targetTimeStr += '+08:00'; 
+        }
+        let remindAt = new Date(targetTimeStr);
 
-        // 🛡️ 【超級強力防呆】修正天數，但保留時分！
-        const hasAfterTomorrowKeyword = cleanQuery.includes('後日') || cleanQuery.includes('大後天');
-        const hasTomorrowKeyword = cleanQuery.includes('聽朝') || cleanQuery.includes('明早') || cleanQuery.includes('明天');
+        // 🛡️ 【超級強力防呆 1】日夜修正
+        const hasNightKeyword = /夜晚|晚上|今晚|聽晚|明晚|後晚|大後晚|夜|下午|傍晚|PM|pm/i.test(cleanQuery);
+        const hasMorningKeyword = /朝|早|AM|am/i.test(cleanQuery);
+        
+        // 取得轉換為 HKT 後的小時數，避免伺服器 UTC 干擾
+        let hktHours = parseInt(remindAt.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: 'numeric', hour12: false }), 10);
+
+        if (hasNightKeyword) {
+            if (hktHours < 12 && hktHours !== 0) {
+                remindAt.setHours(remindAt.getHours() + 12);
+            }
+            if (cleanQuery.includes('12') && hktHours === 12 && hasNightKeyword) {
+                remindAt.setHours(remindAt.getHours() + 12); // 今晚 12 點 = 明日 00:00
+            }
+        }
+        
+        // 🛡️ 【超級強力防呆 2】日期修正 (聽朝/後日/聽晚/後晚)
+        const hasAfterTomorrowKeyword = /後日|大後日|後晚|大後晚/.test(cleanQuery);
+        const hasTomorrowKeyword = /聽日|聽朝|聽晚|明日|明早|明晚|明天/.test(cleanQuery);
 
         if (hasAfterTomorrowKeyword || hasTomorrowKeyword) {
             const expectedDaysToAdd = hasAfterTomorrowKeyword ? 2 : 1;
-            
-            // 建立一個預期時間，只取「年、月、日」，時分秒沿用 AI 算出來的
             let expectedDate = new Date(now.getTime() + expectedDaysToAdd * 24 * 60 * 60 * 1000);
-            expectedDate.setHours(remindAt.getHours(), remindAt.getMinutes(), 0, 0);
-
-            // 如果 AI 算出來的天數不對（例如算成了今天），我們才強制覆蓋日期
-            if (remindAt.getDate() !== expectedDate.getDate()) {
+            
+            // 保留原本算出的時分
+            const hktTimeParts = remindAt.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', minute: '2-digit', hour12: false }).split(':');
+            expectedDate.setHours(parseInt(hktTimeParts[0], 10), parseInt(hktTimeParts[1], 10), 0, 0);
+            
+            // 如果天數不對，強制覆蓋
+            const expectedDayStr = expectedDate.toLocaleDateString('en-US', { timeZone: 'Asia/Hong_Kong' });
+            const actualDayStr = remindAt.toLocaleDateString('en-US', { timeZone: 'Asia/Hong_Kong' });
+            
+            if (expectedDayStr !== actualDayStr) {
                 remindAt = expectedDate;
             }
         }
 
-        if (isNaN(remindAt.getTime()) || remindAt <= now) {
-            await sock.sendMessage(remoteJid, { text: `⚠️ 設定嘅提醒時間已經過咗，或者時間格式唔正確！` }, { quoted: m });
-            return true;
+        // 🛡️ 【超級強力防呆 3】過期順延與容錯 (加入 2 分鐘容錯)
+        const timeDiffMs = remindAt.getTime() - now.getTime();
+        if (timeDiffMs < -120000) { // 小於 -2 分鐘（已經過去超過兩分鐘）
+            if (!/今日|今天|今晚/.test(cleanQuery)) {
+                remindAt.setDate(remindAt.getDate() + 1); // 自動順延一天
+            } else {
+                await sock.sendMessage(remoteJid, { text: `⚠️ 設定嘅時間（${parsed.timeDescription}）已經過咗啦，請設定未來嘅時間喔！` }, { quoted: m });
+                return true;
+            }
         }
 
-        const timeFormatted = remindAt.toLocaleString('en-US', { 
-            dateStyle: 'short', timeStyle: 'short', hour12: false, timeZone: 'Asia/Hong_Kong' 
-        });
+        // 🛡️ 【日期美化】解決 11/6/26 這種怪異格式
+        const parts = new Intl.DateTimeFormat('zh-HK', {
+            timeZone: 'Asia/Hong_Kong',
+            year: 'numeric', month: 'numeric', day: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: false
+        }).formatToParts(remindAt);
+        const findPart = (type) => parts.find(p => p.type === type).value;
+        const timeFormatted = `${findPart('year')}年${findPart('month')}月${findPart('day')}日 ${findPart('hour')}:${findPart('minute')}`;
 
         if (pendingReminders[senderJid]) {
             clearTimeout(pendingReminders[senderJid].timer);
