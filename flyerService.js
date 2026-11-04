@@ -66,8 +66,8 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 2. 🌸 手動修改成員功課記錄指令：!修改記錄 成員名 狀態
-    if (/^[!！]\s*修改記錄/.test(messageContent)) {
-        const rawParam = messageContent.replace(/^[!！]\s*修改記錄/, '').trim();
+    if (/^[!！]\s*修改紀錄?/.test(messageContent)) {
+        const rawParam = messageContent.replace(/^[!！]\s*修改紀錄?/, '').trim();
         const parts = rawParam.split(/\s+/);
         
         if (parts.length < 2) {
