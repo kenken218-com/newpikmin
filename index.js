@@ -16,6 +16,9 @@ const { handleIncomingMessage } = require('./messageHandler');
 const { startCronJobs, startDeletionChecker } = require('./schedulerService');
 const { startReminderChecker } = require('./reminderService');
 
+// 🌙 引入 AI 服務專用的每日紀錄與夜間學習排程
+const { initNightlyLearningJob, logDailyCafeMessage } = require('./aiService');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 let latestQR = '';
@@ -58,10 +61,11 @@ async function connectToWhatsApp() {
 
         isConnecting = false;
         
-        // 🛡️ 傳入 currentDb
+        // 🛡️ 啟動各種監控與定時任務（包含夜間 23:30 AI 自動學習）
         startDeletionChecker(sock, currentDb, () => isConnected);
         startCronJobs(sock, ai);
         startReminderChecker(sock, currentDb, () => isConnected);
+        initNightlyLearningJob(sock, currentDb, ai);
 
         sock.ev.on('creds.update', authState.saveCreds);
         
@@ -100,7 +104,19 @@ async function connectToWhatsApp() {
             if (event.type !== 'notify') return;
             for (const m of event.messages) {
                 try {
-                    // 🛡️ 將最新的 currentDb 傳給 messageHandler
+                    if (!m.message || m.key.fromMe) continue;
+
+                    const remoteJid = m.key.remoteJid;
+                    const msgObj = m.message;
+                    const messageContent = (msgObj.conversation || msgObj.extendedTextMessage?.text || msgObj.imageMessage?.caption || '').trim();
+                    const senderName = m.pushName || '成員';
+
+                    // 📝 收集群組發言（全天候記錄，供 23:30 夜間學習使用）
+                    if (remoteJid && messageContent) {
+                        await logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent);
+                    }
+
+                    // 🛡️ 將最新的 currentDb 傳給 messageHandler 處理指令與 AI 聊天
                     await handleIncomingMessage(sock, m, currentDb, ai, homeworkData, saveHomeworkData, backupHomeworkData);
                 } catch (err) {
                     console.error('❌ 處理訊息時發生錯誤:', err);
