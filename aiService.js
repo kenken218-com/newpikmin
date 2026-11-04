@@ -1,9 +1,9 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js) [全功能聯網修復版]
-// 包含：群組隔離記憶、動態年份聯網、OpenRouter 狀態檢查、防歷史重複、夜間 23:30 自動學習
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [Tavily 聯網終極版]
+// 包含：群組隔離記憶、Tavily 精準搜尋、嚴格防瞎編 Prompt、夜間 23:30 自動學習
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT } = require('./config');
-const { search } = require('duckduckgo-search');
+const { tavily } = require('@tavily/core');
 const cron = require('node-cron');
 
 // 🛡️ 以 remoteJid (群組ID) 為維度的獨立記憶快取，防止多群組對話混淆
@@ -82,7 +82,6 @@ function initNightlyLearningJob(sock, db, ai) {
                 return;
             }
 
-            // 依群組分別分組學習
             const roomsMap = {};
             logs.forEach(l => {
                 if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
@@ -126,7 +125,6 @@ ${dailyChatText}
                 }
             }
 
-            // 清理今日原始日誌
             await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
             console.log(`🧹 [資料庫瘦身] 已自動清理 ${todayStr} 的所有群組原始日誌！`);
 
@@ -139,21 +137,55 @@ ${dailyChatText}
     });
 }
 
-// 🌐 透過 DuckDuckGo 進行免費即時聯網搜尋（動態取得當前年份）
+// 🌐 透過 Tavily API 進行精準聯網搜尋（包含智慧摘要）
 async function searchWeb(query) {
     try {
-        const currentYear = new Date().getFullYear();
-        const refinedQuery = `${query} ${currentYear}`;
-        console.log(`🌐 [DuckDuckGo 搜尋] 正在聯網搜尋: "${refinedQuery}"`);
-        const results = await search(refinedQuery, { safeSearch: 'moderate', limit: 5 });
-        if (!results || results.length === 0) return '';
-        return results.map(r => `標題: ${r.title}\n摘要: ${r.snippet}\n連結: ${r.url}`).join('\n\n');
+        // 清理關鍵字，避免把口語帶進去搜尋
+        let cleanQuery = query
+            .replace(/幫我上網/g, '')
+            .replace(/幫我網上/g, '')
+            .replace(/幫我搵/g, '')
+            .replace(/幫我研究/g, '')
+            .replace(/查一下/g, '')
+            .replace(/搜尋/g, '')
+            .replace(/查/g, '')
+            .replace(/今日/g, '')
+            .trim();
+            
+        if (!cleanQuery) cleanQuery = query;
+
+        console.log(`🌐 [Tavily 搜尋] 正在聯網搜尋: "${cleanQuery}"`);
+
+        // 初始化 Tavily 客戶端 (從環境變數讀取)
+        const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
+
+        const response = await tvly.search(cleanQuery, {
+            searchDepth: "basic",   // basic 每次消耗 1 credit，對 Render 效能最好
+            maxResults: 5,          // 抓取前 5 條結果
+            includeAnswer: true     // 🔥 關鍵：讓 Tavily 直接生成結構化摘要，輕量模型最愛
+        });
+
+        // 1. 優先使用 Tavily 生成的綜合摘要
+        if (response.answer) {
+            return `【Tavily 搜尋摘要】:\n${response.answer}`;
+        }
+
+        // 2. 如果沒有摘要，則回傳具體的網頁標題與內容
+        if (response.results && response.results.length > 0) {
+            return response.results
+                .slice(0, 4)
+                .map(r => `標題: ${r.title}\n摘要: ${r.content}`)
+                .join('\n\n');
+        }
+        return '';
+
     } catch (e) {
-        console.error('❌ 聯網搜尋失敗:', e);
+        console.error('❌ Tavily 聯網搜尋失敗:', e.message);
         return '';
     }
 }
 
+// 🛡️ 備用 AI 線路 (OpenRouter)
 async function fetchOpenRouterGemmaFree(fullPrompt) {
     const openRouterKey = process.env.OPENROUTER_API_KEY || "";
     if (!openRouterKey) throw new Error("未設定 OPENROUTER_API_KEY");
@@ -182,6 +214,7 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
     return data.choices[0]?.message?.content || '';
 }
 
+// 🚀 主處理器：AI 聊天
 async function processAIChat(sock, remoteJid, senderName, query, messageObj, db, ai) {
     console.log(`🚀 [AI 聊天啟動] 收到來自 [${senderName}] 的提問: "${query}"`);
 
@@ -197,28 +230,19 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         return;
     }
 
-    // 🌐 智慧判斷聯網搜尋（擴充「新聞」、「今日」、「咩事」等關鍵字，確保查新聞時必定會觸發聯網）
+    // 🌐 智慧判斷聯網搜尋
     let webSearchContext = '';
-    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生'];
+    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生', '大事'];
     const hasStrongIntent = strongSearchKeywords.some(keyword => query.includes(keyword));
 
     if (hasStrongIntent) {
-        let searchQuery = query
-            .replace(/幫我上網/g, '')
-            .replace(/幫我網上/g, '')
-            .replace(/幫我搵/g, '')
-            .replace(/幫我研究/g, '')
-            .replace(/查一下/g, '')
-            .replace(/搜尋/g, '')
-            .replace(/查/g, '')
-            .replace(/今日/g, '')
-            .trim();
+        const searchResults = await searchWeb(query);
         
-        if (!searchQuery) searchQuery = query;
-
-        const searchResults = await searchWeb(searchQuery);
-        if (searchResults) {
+        // 🛡️ 嚴格區分：有沒有搜到東西？
+        if (searchResults && searchResults.trim().length > 10) {
             webSearchContext = `\n【🌐 網路即時搜尋結果】:\n${searchResults}\n`;
+        } else {
+            webSearchContext = `\n【⚠️ 系統緊急提示】: 本次聯網搜尋失敗，完全沒有抓到任何資料。\n`;
         }
     }
 
@@ -236,12 +260,11 @@ ${historyText}
 
 現在 ${senderName} 對你說："${query}"
 
-⚠️ 【聯網事實查核與防汙染守則】：
-1. 請仔細檢視上方【🌐 網路即時搜尋結果】。
-2. **嚴防過時資料與 SEO 垃圾廣告**：如果搜尋結果看起來是內容農場、廣告、或明顯過期（非今年最新）的資訊，請直接忽略它！
-3. 如果搜尋結果沒有提供足夠或可靠的答案，請誠實告訴 ${senderName}「搵唔到最新可靠嘅資料」，絕對不要瞎掰或胡亂猜測。
-
-請以 "皮皮小管家" 身份用道地香港廣東話親切回覆：`;
+⚠️ 【嚴格回答守則】：
+1. 如果你看到【⚠️ 系統緊急提示】，代表你現在沒有聯網。請直接用廣東話承認：「哎呀，我暫時連唔到新聞網/網路，搵唔到最新嘅資料呀，陣間再幫你試下！」，**絕對不准**用「大型盛事」、「民生政策」、「各項措施」等空泛廢話來敷衍。
+2. 如果你看到【🌐 網路即時搜尋結果】，請從中提取 **1 到 2 件最核心的具體事件**（例如：邊個官員講咗咩、邊度發生咗咩事、具體政策係咩），用香港廣東話總結給我聽。
+3. 請保持「皮皮小管家」親切活潑的語氣，但內容必須「有料」，不要講廢話。
+請回覆：`;
 
     let replyText = '';
     try {
