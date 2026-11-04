@@ -8,9 +8,9 @@
   },
   "dependencies": {
     "@google/genai": "latest",
+    "@tavily/core": "latest",
     "@whiskeysockets/baileys": "^6.7.12",
     "dotenv": "^16.4.5",
-    "duckduckgo-search": "latest",
     "express": "^4.19.2",
     "groq-sdk": "^0.7.0",
     "mongodb": "^6.8.0",
