@@ -1,5 +1,5 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js) [PRO 級修復版]
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [全功能聯網修復版]
 // 包含：群組隔離記憶、動態年份聯網、OpenRouter 狀態檢查、防歷史重複、夜間 23:30 自動學習
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT } = require('./config');
@@ -173,7 +173,6 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
         })
     });
 
-    // 🛡️ 嚴格檢查 HTTP Status，失敗時拋出錯誤以觸發備用 catch
     if (!response.ok) {
         const errText = await response.text();
         throw new Error(`OpenRouter HTTP error! status: ${response.status}, body: ${errText}`);
@@ -198,9 +197,9 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         return;
     }
 
-    // 🌐 智慧判斷聯網搜尋
+    // 🌐 智慧判斷聯網搜尋（擴充「新聞」、「今日」、「咩事」等關鍵字，確保查新聞時必定會觸發聯網）
     let webSearchContext = '';
-    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新'];
+    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生'];
     const hasStrongIntent = strongSearchKeywords.some(keyword => query.includes(keyword));
 
     if (hasStrongIntent) {
@@ -211,6 +210,8 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
             .replace(/幫我研究/g, '')
             .replace(/查一下/g, '')
             .replace(/搜尋/g, '')
+            .replace(/查/g, '')
+            .replace(/今日/g, '')
             .trim();
         
         if (!searchQuery) searchQuery = query;
@@ -221,7 +222,6 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         }
     }
 
-    // 🛡️ 關鍵修復：在建立 historyText 之前先不要把當前 query 塞進去，避免歷史紀錄重複結尾
     const userTraits = memory.userProfiles[senderName] || [];
     const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期印象是：[${userTraits.join(', ')}]` : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
     const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
@@ -262,7 +262,6 @@ ${historyText}
     }
 
     if (replyText) {
-        // 🛡️ 雙方問答都完成後，才將使用者的問句與 AI 的回覆正式寫入該群組的記憶體與資料庫
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
         await recordMessageToMemory(db, remoteJid, '皮皮小管家', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
@@ -271,7 +270,6 @@ ${historyText}
 
 module.exports = {
     loadLongTermMemory: async (db) => {
-        // 相容舊呼叫，實際在 getRoomMemory 中按需載入
         return roomMemories;
     },
     recordCafeMessage: recordMessageToMemory,
