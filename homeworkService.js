@@ -4,7 +4,9 @@
 // ==========================================
 
 function getDynamicDeadlines() {
-    const now = new Date(); // 以今天為起點
+    // 💡 設定以 10月31號為起點 (這裡以當年度的 10月31日 00:00 為例)
+    const currentYear = new Date().getFullYear();
+    const now = new Date(currentYear, 9, 31); // 註：JavaScript 的月份從 0 開始，9 代表 10月
     
     const forceDeadlineDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const flowerDeadlineDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
