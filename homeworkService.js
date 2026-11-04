@@ -84,7 +84,7 @@ SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAM
         // 🛡️ 注意：這裡模型名稱我幫你改成了目前官方支援的版本
         // 如果你之前用的 'gemini-3.5-flash-lite' 會報錯，請保留 'gemini-1.5-flash'
         const response = await ai.models.generateContent({ 
-            model: 'gemini-1.5-flash', 
+            model: 'gemini-3.5-flash-lite', 
             contents: prompt 
         });
         
