@@ -1,5 +1,5 @@
 // ==========================================
-// 🌸 花農群專用服務模組 (flyerService.js) - 三層智慧辨識 (ID ➔ 電話 ➔ 名字)
+// 🌸 花農群專用服務模組 (flyerService.js) - 具備雙軌防撞、ID/電話/名稱三層辨識與手動修改
 // ==========================================
 const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
@@ -65,6 +65,53 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         return;
     }
 
+    // 2. 🌸 手動修改成員功課記錄指令：!修改記錄 成員名 狀態
+    if (/^[!！]\s*修改記錄/.test(messageContent)) {
+        const rawParam = messageContent.replace(/^[!！]\s*修改記錄/, '').trim();
+        const parts = rawParam.split(/\s+/);
+        
+        if (parts.length < 2) {
+            await sock.sendMessage(remoteJid, { text: `⚠️ 格式錯誤！請使用：\n!修改記錄 [成員名字] [狀態]\n(狀態可填: 🌸/已種花, q1/1, q2/2, 未完成/清空)` }, { quoted: m });
+            return;
+        }
+
+        const targetNameQuery = parts[0];
+        const statusQuery = parts[1].toLowerCase();
+
+        const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+        let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(targetNameQuery));
+
+        if (!matchedName) {
+            await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${targetNameQuery}」的成員！` }, { quoted: m });
+            return;
+        }
+
+        await backupHomeworkData();
+
+        if (statusQuery.includes('🌸') || statusQuery.includes('種花') || statusQuery.includes('flower')) {
+            homeworkData[matchedName].flower = true;
+            homeworkData[matchedName].q1 = false;
+            homeworkData[matchedName].q2 = false;
+        } else if (statusQuery === 'q1' || statusQuery === '1') {
+            homeworkData[matchedName].q1 = true;
+            homeworkData[matchedName].flower = false;
+        } else if (statusQuery === 'q2' || statusQuery === '2') {
+            homeworkData[matchedName].q2 = true;
+            homeworkData[matchedName].flower = false;
+        } else if (statusQuery.includes('未完成') || statusQuery.includes('清空') || statusQuery.includes('0')) {
+            homeworkData[matchedName].flower = false;
+            homeworkData[matchedName].q1 = false;
+            homeworkData[matchedName].q2 = false;
+        } else {
+            await sock.sendMessage(remoteJid, { text: `❌ 無效的狀態指令！支援的狀態：🌸 (種花)、q1 / q2 (強開)、未完成` }, { quoted: m });
+            return;
+        }
+
+        await saveHomeworkData(homeworkData);
+        await sock.sendMessage(remoteJid, { text: `✅ 已成功將成員「${matchedName}」的功課狀態更新！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
+        return;
+    }
+
     // 3. 加人
     if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人') || messageContent.startsWith('! ai加人') || messageContent.startsWith('！ ai加人')) {
         const name = messageContent.replace(/^[!！]\s*ai加人/, '').trim();
@@ -101,7 +148,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     if (/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/.test(messageContent)) {
         const name = messageContent.replace(/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/, '').trim();
         
-        // 清理名稱輔助
         const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
         let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(name)) || name;
 
@@ -202,11 +248,9 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             }
 
             if (!matchedName) {
-                // 如果三層都找不到，直接以當前發言名字新增一筆
                 matchedName = currentSender;
                 homeworkData[matchedName] = { id: currentJid || "", phone: currentPhone || "", flower: false, q1: false, q2: false };
             } else {
-                // 💡 如果找到了舊資料，但成員改名或加了符號，自動把 key 更新成最新帶符號的名字
                 if (matchedName !== currentSender && !homeworkData[currentSender]) {
                     await backupHomeworkData();
                     homeworkData[currentSender] = { 
@@ -218,7 +262,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                     matchedName = currentSender;
                 }
 
-                // 自動補齊 ID 與 Phone
                 if (currentJid && !homeworkData[matchedName].id) {
                     homeworkData[matchedName].id = currentJid;
                 }
@@ -229,7 +272,9 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
 
             const alreadyCompleted = homeworkData[matchedName].flower || homeworkData[matchedName].q1 || homeworkData[matchedName].q2;
 
-            if (result === 'need_flower_name') {
+            if (result === 'social_share') {
+                await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 分享的社群貼文，感謝分享！🙌（此訊息不列入功課計算喔～）` });
+            } else if (result === 'need_flower_name') {
                 if (alreadyCompleted) {
                     await sock.sendMessage(remoteJid, { text: `🌱 感謝 ${currentSender} 額外分享座標！☕🌸` });
                 } else {
