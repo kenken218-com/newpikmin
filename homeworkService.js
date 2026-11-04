@@ -52,28 +52,43 @@ function generateHomeworkReport(homeworkData) {
 }
 async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
     try {
-        const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請仔細分析訊息內容：
+        const prompt = `你是一個資深的《皮克敏 Bloom (Pikmin Bloom)》花農功課審核 AI。請仔細分析訊息內容是否為玩家繳交的功課。
 
-【重要排除規則】：
-如果訊息內容包含 Facebook、FB、Threads、脆、IG、網址連結（http/https）、或者是純粹轉發外部社群貼文/新聞分享，**絕對不能**視為功課，請直接判定為社群分享。
+【重要排除規則（優先判斷）】：
+如果訊息內容包含 Facebook、FB、Threads、脆、IG、網址連結（http/https）、或是轉發外部社群貼文/新聞分享，**絕對不能**視為功課，請直接判定為「SOCIAL_SHARE」。
 
-【花名與作業定義】：
-- 花名定義：包含任何真實花名以及遊戲常見俗稱（如變異、紅主、藍主、黃主、混色、鼠尾草、白花、睡蓮等，以及「首開」、「最後」等苗數相關字眼）。
+【花農語意解析規範（泛用模式）】：
+只要訊息中出現以下**任何一種花種描述模式**，即視為「已包含花名/花種描述」：
+1. 單寫花名或品種簡寫（不帶顏色）：如「九重」、「九重葛」、「鼠尾」、「萬壽」、「睡蓮」、「向日葵」等任何花卉名稱。
+2. 顏色 + 簡寫：如「黃九」、「藍鼠」、「白蓮」、「紫萬」。
+3. 混色 / 混合字眼：如「混色」、「混」、「黃混」、「彩混」。
+4. 主花 / 副花簡稱：如「主花」、「副花」、「紅主」、「藍副」。
+5. 苗數與開花狀態：如「首開」、「最後」、「3苗」、「開完」、「差2」等種花進度用語。
 
-審核規則：
-1. 「SOCIAL_SHARE」：含有 fb、facebook、threads、脆、ig、http 連結、或分享外部文章/貼文的內容。
-2. 「FLOWER」：含上述花名、俗稱或種花字眼，且同時有 3 個或以上經緯度座標（且不包含社群分享連結）。
-3. 「FORCE_OPEN_FULL」：含「強開」或白花名稱，且剛好包含 2 個或以上經緯度座標。
-4. 「FORCE_OPEN_NEED_MORE」：含「強開」或白花名稱，但僅有 1 個經緯度座標。
-5. 「NEED_FLOWER_NAME」：有發送 3 個或以上座標，但完全沒有提及花名。
-6. 「NONE」：一般閒聊、打菇、時區等無效內容。
+【審核判定規則】：
+1. 「SOCIAL_SHARE」：含有 fb, facebook, threads, 脆, ig, http/https 連結或社群分享。
+2. 「FLOWER」：含上述任意花種/混色/狀態描述，且同時包含 3 個或以上經緯度座標（無社群連結）。
+3. 「FORCE_OPEN_FULL」：含「強開」或白花/白種名稱，且包含 2 個或以上經緯度座標。
+4. 「FORCE_OPEN_NEED_MORE」：含「強開」或白花/白種名稱，但僅有 1 個經緯度座標。
+5. 「NEED_FLOWER_NAME」：提供 3 個或以上座標，但訊息完全沒有任何花名、顏色、混色或種花相關描述。
+6. 「NONE」：一般聊天、打菇、問候等非功課內容。
 
-訊息：\n"""\n${combinedMessageText}\n"""\n請嚴格只回傳以下其中一個：SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
+訊息內容：
+"""
+${combinedMessageText}
+"""
 
-        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+請嚴格只回傳以下其中一個標籤（不要有任何多餘文字或標點）：
+SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
+
+        const response = await ai.models.generateContent({ 
+            model: 'gemini-2.5-flash', 
+            contents: prompt 
+        });
+        
         const result = response.text ? response.text.trim().toUpperCase() : 'NONE';
         
-        console.log('🤖 AI 審核結果:', result);
+        console.log('🤖 AI 智慧審核結果:', result);
 
         if (result.includes('SOCIAL_SHARE')) return 'social_share';
         if (result.includes('FLOWER')) return 'flower';
