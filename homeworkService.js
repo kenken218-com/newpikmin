@@ -1,4 +1,3 @@
-
 // ==========================================
 // 🌸 花農群功課手冊服務 (homeworkService.js)
 // ==========================================
@@ -50,6 +49,7 @@ function generateHomeworkReport(homeworkData) {
     report += `💡 溫馨提示：種花分享訊息將於 50 分鐘後自動清理！`;
     return report;
 }
+
 async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
     try {
         const prompt = `你是一個資深的《皮克敏 Bloom (Pikmin Bloom)》花農功課審核 AI。請仔細分析訊息內容是否為玩家繳交的功課。
@@ -81,8 +81,10 @@ ${combinedMessageText}
 請嚴格只回傳以下其中一個標籤（不要有任何多餘文字或標點）：
 SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
 
+        // 🛡️ 注意：這裡模型名稱我幫你改成了目前官方支援的版本
+        // 如果你之前用的 'gemini-3.5-flash-lite' 會報錯，請保留 'gemini-1.5-flash'
         const response = await ai.models.generateContent({ 
-            model: 'gemini-3.5-flash-lite', 
+            model: 'gemini-1.5-flash', 
             contents: prompt 
         });
         
@@ -101,3 +103,9 @@ SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAM
         return null; 
     }
 }
+
+// 🛡️ 最關鍵的一步：導出這兩個函數給 flyerService.js 使用！
+module.exports = {
+    generateHomeworkReport,
+    aiCheckHomeworkAdvanced
+};
