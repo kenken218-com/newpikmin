@@ -1,3 +1,53 @@
+JavaScript
+// ==========================================
+// 🌸 花農群功課手冊服務 (homeworkService.js)
+// ==========================================
+
+function getDynamicDeadlines() {
+    const now = new Date(); // 以今天為起點
+    
+    const forceDeadlineDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const flowerDeadlineDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+    const formatDate = (date) => {
+        const day = date.getDate();
+        const monthStr = date.toLocaleString('en-US', { month: 'short' });
+        const year = date.getFullYear();
+        return `${day} ${monthStr} ${year} 截`;
+    };
+
+    return {
+        flowerDeadline: formatDate(flowerDeadlineDate),
+        force1Deadline: formatDate(forceDeadlineDate),
+        force2Deadline: formatDate(flowerDeadlineDate)
+    };
+}
+
+function generateHomeworkReport(homeworkData) {
+    let completedCount = 0, pendingCount = 0;
+    let completedList = [], pendingList = [];
+
+    for (const [name, status] of Object.entries(homeworkData)) {
+        let symbol = status.flower ? '🌸' : `${status.q1 ? '1️⃣' : ''}${status.q2 ? '2️⃣' : ''}`;
+        if (status.flower || status.q1 || status.q2) {
+            completedCount++;
+            completedList.push(`  • ${name} ${symbol}`);
+        } else {
+            pendingCount++;
+            pendingList.push(`  • ${name}`);
+        }
+    }
+
+    const deadlines = getDynamicDeadlines();
+    let report = `╭──────────────────────╮\n│  🌱 花農群功課手冊公告  │\n╰──────────────────────╯\n\n`;
+    report += `📜 【繳交規則 (二選一)】\n 1️⃣ 種花：每兩週分享一次 (10苗以上)\n 2️⃣ 強開：每週兩朵任意白花 (需附2個或以上座標)\n\n`;
+    report += `⏳ 【本期自動截止時間】\n 🌸 Option 1 (種花) ── ${deadlines.flowerDeadline}\n 1️⃣ Option 2 (強開1) ── ${deadlines.force1Deadline}\n 2️⃣ Option 2 (強開2) ── ${deadlines.force2Deadline}\n─────────────────────────\n\n`;
+    report += `📊 【當前進度統計】\n ✅ 已完成：${completedCount} 人\n ⏳ 未完成：${pendingCount} 人\n─────────────────────────\n\n`;
+    report += `🌸 【已完成功課名單】\n` + (completedList.length > 0 ? completedList.join('\n') + '\n\n' : `  （無）\n\n`);
+    report += `⚠️ 【尚未完成名單】\n` + (pendingList.length > 0 ? pendingList.join('\n') + '\n\n' : `  🎉 全員已完成！\n\n`);
+    report += `💡 溫馨提示：種花分享訊息將於 50 分鐘後自動清理！`;
+    return report;
+}
 async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
     try {
         const prompt = `你是一個《皮克敏 Bloom》作業審核 AI。請仔細分析訊息內容：
