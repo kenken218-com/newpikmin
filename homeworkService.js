@@ -82,7 +82,7 @@ ${combinedMessageText}
 SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
 
         const response = await ai.models.generateContent({ 
-            model: 'gemini-2.5-flash', 
+            model: 'gemini-3.5-flash-lite', 
             contents: prompt 
         });
         
