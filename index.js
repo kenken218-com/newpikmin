@@ -1,5 +1,5 @@
 // ==========================================
-// 🚀 終極乾淨入口 (index.js)
+// 🚀 終極乾淨入口 (index.js) [優化防重連版]
 // ==========================================
 require('dotenv').config();
 const { default: makeWASocket, DisconnectReason, Browsers, initAuthCreds, proto } = require('@whiskeysockets/baileys');
@@ -8,15 +8,12 @@ const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
 
-// 🛡️ 注意：不要在這裡解構 db，否則會拿到永遠是 null 的快照
 const dbService = require('./dbService');
 const { initDB, useMongoAuthState, loadHomeworkData, saveHomeworkData, backupHomeworkData } = dbService;
 
 const { handleIncomingMessage } = require('./messageHandler');
 const { startCronJobs, startDeletionChecker } = require('./schedulerService');
 const { startReminderChecker } = require('./reminderService');
-
-// 🌙 引入 AI 服務專用的每日紀錄與夜間學習排程
 const { initNightlyLearningJob, logDailyCafeMessage } = require('./aiService');
 
 const app = express();
@@ -24,6 +21,9 @@ const PORT = process.env.PORT || 3000;
 let latestQR = '';
 let isConnected = false;
 let isConnecting = false;
+
+// 🛡️ 確保背景任務只啟動一次
+let isServicesStarted = false; 
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
@@ -41,10 +41,20 @@ async function connectToWhatsApp() {
 
     try {
         await initDB();
-        
-        // 🛡️ 確保拿到最新連線成功的 db 實例
         const currentDb = dbService.db; 
-        
+
+        // 🚀 建立資料庫索引
+        if (currentDb && !isServicesStarted) {
+            try {
+                await currentDb.collection('reminders').createIndex({ remindAt: 1 });
+                await currentDb.collection('scheduled_deletions').createIndex({ deleteAt: 1 });
+                await currentDb.collection('cafe_daily_logs').createIndex({ date: 1 });
+                console.log('✅ [資料庫] 索引建立/確認完成！');
+            } catch (e) {
+                console.error('❌ 建立資料庫索引失敗:', e);
+            }
+        }
+
         const homeworkData = await loadHomeworkData();
         const authState = await useMongoAuthState(currentDb);
 
@@ -61,11 +71,15 @@ async function connectToWhatsApp() {
 
         isConnecting = false;
         
-        // 🛡️ 啟動各種監控與定時任務（包含夜間 23:30 AI 自動學習）
-        startDeletionChecker(sock, currentDb, () => isConnected);
-        startCronJobs(sock, ai);
-        startReminderChecker(sock, currentDb, () => isConnected);
-        initNightlyLearningJob(sock, currentDb, ai);
+        // 🛡️ 只有第一次連線時，才啟動定時任務，避免斷線重連時重複註冊
+        if (!isServicesStarted) {
+            startDeletionChecker(sock, currentDb, () => isConnected);
+            startCronJobs(sock, ai);
+            startReminderChecker(sock, currentDb, () => isConnected);
+            initNightlyLearningJob(sock, currentDb, ai);
+            isServicesStarted = true;
+            console.log('⚙️ [系統] 所有背景定時任務已啟動！');
+        }
 
         sock.ev.on('creds.update', authState.saveCreds);
         
@@ -88,7 +102,7 @@ async function connectToWhatsApp() {
                     await authState.clearCreds();
                     latestQR = '';
                     console.error('❌ 帳號已被登出，已清除憑證，請重新掃碼！');
-                    setTimeout(() => connectToWhatsApp(), 3000); // 重新產生 QR Code
+                    setTimeout(() => connectToWhatsApp(), 3000);
                 } else if (shouldReconnect) {
                     setTimeout(() => connectToWhatsApp(), 3000);
                 }
@@ -111,12 +125,11 @@ async function connectToWhatsApp() {
                     const messageContent = (msgObj.conversation || msgObj.extendedTextMessage?.text || msgObj.imageMessage?.caption || '').trim();
                     const senderName = m.pushName || '成員';
 
-                    // 📝 收集群組發言（全天候記錄，供 23:30 夜間學習使用）
                     if (remoteJid && messageContent) {
-                        await logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent);
+                        // 注意：這裡建議加上 .catch 避免 log 失敗卡住主執行緒
+                        logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent).catch(e => console.error(e));
                     }
 
-                    // 🛡️ 將最新的 currentDb 傳給 messageHandler 處理指令與 AI 聊天
                     await handleIncomingMessage(sock, m, currentDb, ai, homeworkData, saveHomeworkData, backupHomeworkData);
                 } catch (err) {
                     console.error('❌ 處理訊息時發生錯誤:', err);
