@@ -1,51 +1,62 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js)
-// 包含：雙 AI 斷線切換、DuckDuckGo 智慧聯網（含 2026 年過濾與防 SEO 汙染）、夜間 23:30 自動學習與資料庫瘦身
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [PRO 級修復版]
+// 包含：群組隔離記憶、動態年份聯網、OpenRouter 狀態檢查、防歷史重複、夜間 23:30 自動學習
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT } = require('./config');
 const { search } = require('duckduckgo-search');
 const cron = require('node-cron');
 
-let cafeMemory = { recentHistory: [], userProfiles: {} };
+// 🛡️ 以 remoteJid (群組ID) 為維度的獨立記憶快取，防止多群組對話混淆
+let roomMemories = {}; 
 
-async function loadLongTermMemory(db) {
-    if (db) {
-        try {
-            const collection = db.collection('cafe_memory');
-            const doc = await collection.findOne({ _id: 'memory_data' });
-            if (doc) {
-                cafeMemory = { recentHistory: doc.recentHistory || [], userProfiles: doc.userProfiles || {} };
+async function getRoomMemory(db, remoteJid) {
+    if (!roomMemories[remoteJid]) {
+        let mem = { recentHistory: [], userProfiles: {} };
+        if (db) {
+            try {
+                const collection = db.collection('cafe_memory');
+                const doc = await collection.findOne({ _id: `memory_${remoteJid}` });
+                if (doc) {
+                    mem = { recentHistory: doc.recentHistory || [], userProfiles: doc.userProfiles || {} };
+                }
+            } catch (e) {
+                console.error(`❌ 載入長期記憶失敗 [${remoteJid}]:`, e);
             }
-        } catch (e) {}
+        }
+        roomMemories[remoteJid] = mem;
     }
-    return cafeMemory;
+    return roomMemories[remoteJid];
 }
 
-async function saveLongTermMemory(db) {
-    if (db) {
+async function saveLongTermMemory(db, remoteJid) {
+    if (db && roomMemories[remoteJid]) {
         try {
             const collection = db.collection('cafe_memory');
             await collection.updateOne(
-                { _id: 'memory_data' },
-                { $set: { recentHistory: cafeMemory.recentHistory, userProfiles: cafeMemory.userProfiles, updatedAt: new Date() } },
+                { _id: `memory_${remoteJid}` },
+                { $set: { recentHistory: roomMemories[remoteJid].recentHistory, userProfiles: roomMemories[remoteJid].userProfiles, updatedAt: new Date() } },
                 { upsert: true }
             );
-        } catch (e) {}
+        } catch (e) {
+            console.error(`❌ 儲存長期記憶失敗 [${remoteJid}]:`, e);
+        }
     }
 }
 
-async function recordCafeMessage(db, senderName, role, text) {
-    cafeMemory.recentHistory.push({ senderName, role, text, time: new Date().toLocaleString() });
-    if (cafeMemory.recentHistory.length > 40) cafeMemory.recentHistory.shift();
-    await saveLongTermMemory(db);
+async function recordMessageToMemory(db, remoteJid, senderName, role, text) {
+    const memory = await getRoomMemory(db, remoteJid);
+    memory.recentHistory.push({ senderName, role, text, time: new Date().toLocaleString() });
+    if (memory.recentHistory.length > 40) memory.recentHistory.shift();
+    await saveLongTermMemory(db, remoteJid);
 }
 
 // 📝 記錄 Coffee 群的所有對話（供日結學習使用）
-async function logDailyCafeMessage(db, senderName, text) {
+async function logDailyCafeMessage(db, remoteJid, senderName, text) {
     if (!db) return;
     try {
-        const todayStr = new Date().toISOString().split('T')[0]; // 格式: YYYY-MM-DD
+        const todayStr = new Date().toISOString().split('T')[0];
         await db.collection('cafe_daily_logs').insertOne({
+            roomJid: remoteJid,
             date: todayStr,
             senderName,
             text,
@@ -56,10 +67,10 @@ async function logDailyCafeMessage(db, senderName, text) {
     }
 }
 
-// 🌙 啟動每天晚上 11:30 的自動學習排程（具備防肥大自動清理機制）
+// 🌙 啟動每天晚上 11:30 的自動學習排程
 function initNightlyLearningJob(sock, db, ai) {
     cron.schedule('30 23 * * *', async () => {
-        console.log('🌙 [夜間學習啟動] 正在結算今日 Coffee 群聊天紀錄...');
+        console.log('🌙 [夜間學習啟動] 正在結算各群組今日聊天紀錄...');
         if (!db) return;
 
         try {
@@ -67,14 +78,22 @@ function initNightlyLearningJob(sock, db, ai) {
             const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
 
             if (!logs || logs.length === 0) {
-                console.log('🌙 今日 Coffee 群沒有記錄到對話。');
+                console.log('🌙 今日各群組沒有記錄到對話。');
                 return;
             }
 
-            // 1. 將今天大家的對話串起來交給 AI 學習
-            const dailyChatText = logs.map(l => `[${l.senderName}]: ${l.text}`).join('\n');
+            // 依群組分別分組學習
+            const roomsMap = {};
+            logs.forEach(l => {
+                if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
+                roomsMap[l.roomJid].push(l);
+            });
 
-            const learningPrompt = `你是一個群組智慧分析 AI。以下是今天 Coffee 群全體成員的所有對話紀錄：
+            for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
+                const dailyChatText = roomLogs.map(l => `[${l.senderName}]: ${l.text}`).join('\n');
+                const memory = await getRoomMemory(db, remoteJid);
+
+                const learningPrompt = `你是一個群組智慧分析 AI。以下是今天該群組全體成員的所有對話紀錄：
 ---
 ${dailyChatText}
 ---
@@ -85,29 +104,31 @@ ${dailyChatText}
   "成員名字2": ["特徵1"]
 }`;
 
-            const response = await ai.models.generateContent({
-                model: 'gemini-3.5-flash-lite',
-                contents: learningPrompt
-            });
+                try {
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-3.5-flash-lite',
+                        contents: learningPrompt
+                    });
 
-            let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '') : '';
-            const parsedProfiles = JSON.parse(analysisResult);
+                    let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '') : '';
+                    const parsedProfiles = JSON.parse(analysisResult);
 
-            // 2. 更新到長期記憶的 userProfiles 中
-            for (const [name, traits] of Object.entries(parsedProfiles)) {
-                if (!cafeMemory.userProfiles[name]) {
-                    cafeMemory.userProfiles[name] = [];
+                    for (const [name, traits] of Object.entries(parsedProfiles)) {
+                        if (!memory.userProfiles[name]) memory.userProfiles[name] = [];
+                        const merged = [...new Set([...memory.userProfiles[name], ...traits])];
+                        memory.userProfiles[name] = merged.slice(-5);
+                    }
+
+                    await saveLongTermMemory(db, remoteJid);
+                    console.log(`🌙 [夜間學習完成] 已更新群組 ${remoteJid} 的成員檔案！`);
+                } catch (err) {
+                    console.error(`❌ 處理群組 ${remoteJid} 夜間學習失敗:`, err);
                 }
-                const merged = [...new Set([...cafeMemory.userProfiles[name], ...traits])];
-                cafeMemory.userProfiles[name] = merged.slice(-5); // 最多保留 5 條最新特徵
             }
 
-            await saveLongTermMemory(db);
-            console.log('🌙 [夜間學習完成] 已成功更新今日成員檔案！');
-
-            // 3. 🧹 【防肥大關鍵】學習完成後，自動刪除今天的原始對話紀錄，保持資料庫輕量
+            // 清理今日原始日誌
             await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
-            console.log(`🧹 [資料庫瘦身] 已自動清理 ${todayStr} 的原始聊天日誌！`);
+            console.log(`🧹 [資料庫瘦身] 已自動清理 ${todayStr} 的所有群組原始日誌！`);
 
         } catch (e) {
             console.error('❌ 執行夜間學習任務發生錯誤:', e);
@@ -118,10 +139,10 @@ ${dailyChatText}
     });
 }
 
-// 🌐 透過 DuckDuckGo 進行免費即時聯網搜尋（自動附加 2026 年過濾過時資料，並拉高至 5 筆交叉比對）
+// 🌐 透過 DuckDuckGo 進行免費即時聯網搜尋（動態取得當前年份）
 async function searchWeb(query) {
     try {
-        const currentYear = new Date().getFullYear(); // 自動取得今年年份（2026，明年自動變成 2027）
+        const currentYear = new Date().getFullYear();
         const refinedQuery = `${query} ${currentYear}`;
         console.log(`🌐 [DuckDuckGo 搜尋] 正在聯網搜尋: "${refinedQuery}"`);
         const results = await search(refinedQuery, { safeSearch: 'moderate', limit: 5 });
@@ -152,26 +173,33 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
         })
     });
 
+    // 🛡️ 嚴格檢查 HTTP Status，失敗時拋出錯誤以觸發備用 catch
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`OpenRouter HTTP error! status: ${response.status}, body: ${errText}`);
+    }
+
     const data = await response.json();
     return data.choices[0]?.message?.content || '';
 }
 
 async function processAIChat(sock, remoteJid, senderName, query, messageObj, db, ai) {
-    console.log(`🚀 [AI 聊天啟動] 收到來自 ${senderName} 的提問: "${query}"`);
-    await recordCafeMessage(db, senderName, 'user', query);
+    console.log(`🚀 [AI 聊天啟動] 收到來自 [${senderName}] 的提問: "${query}"`);
 
-    let webSearchContext = '';
+    const memory = await getRoomMemory(db, remoteJid);
 
-    // 🔍 模糊意圖判斷（若只丟一句「幫我」，反問對方）
+    // 🔍 模糊意圖判斷
     const isAmbiguous = query === '幫我' || query === '幫幫我';
     if (isAmbiguous) {
         let replyText = `🌱 收到！請問需要皮皮小管家幫你查咩資料或處理咩事呀？直接話我知得架啦～`;
-        await recordCafeMessage(db, '皮皮小管家', 'assistant', replyText);
+        await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
+        await recordMessageToMemory(db, remoteJid, '皮皮小管家', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
         return;
     }
 
-    // 🌐 智慧判斷是否需要聯網搜尋（包含「幫我上網」、「幫我搵」、「幫我研究」等）
+    // 🌐 智慧判斷聯網搜尋
+    let webSearchContext = '';
     const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新'];
     const hasStrongIntent = strongSearchKeywords.some(keyword => query.includes(keyword));
 
@@ -193,9 +221,10 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         }
     }
 
-    const userTraits = cafeMemory.userProfiles[senderName] || [];
+    // 🛡️ 關鍵修復：在建立 historyText 之前先不要把當前 query 塞進去，避免歷史紀錄重複結尾
+    const userTraits = memory.userProfiles[senderName] || [];
     const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期印象是：[${userTraits.join(', ')}]` : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
-    const historyText = cafeMemory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
+    const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
 
     const fullPrompt = `
 ${webSearchContext}
@@ -209,10 +238,10 @@ ${historyText}
 
 ⚠️ 【聯網事實查核與防汙染守則】：
 1. 請仔細檢視上方【🌐 網路即時搜尋結果】。
-2. **嚴防過時資料與 SEO 垃圾廣告**：如果搜尋結果看起來是內容農場、廣告、或明顯過期（非 2026 年最新）的資訊，請直接忽略它！
+2. **嚴防過時資料與 SEO 垃圾廣告**：如果搜尋結果看起來是內容農場、廣告、或明顯過期（非今年最新）的資訊，請直接忽略它！
 3. 如果搜尋結果沒有提供足夠或可靠的答案，請誠實告訴 ${senderName}「搵唔到最新可靠嘅資料」，絕對不要瞎掰或胡亂猜測。
 
-請以「皮皮小管家」身份用道地香港廣東話親切回覆：`;
+請以 "皮皮小管家/小呆" 身份用道地香港廣東話親切回覆：`;
 
     let replyText = '';
     try {
@@ -227,19 +256,25 @@ ${historyText}
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
+            console.error('❌ OpenRouter 備用線路也發生錯誤:', err2);
             replyText = '🌱 哎呀，皮皮小管家同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
         }
     }
 
     if (replyText) {
-        await recordCafeMessage(db, '皮皮小管家', 'assistant', replyText);
+        // 🛡️ 雙方問答都完成後，才將使用者的問句與 AI 的回覆正式寫入該群組的記憶體與資料庫
+        await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
+        await recordMessageToMemory(db, remoteJid, '皮皮小管家', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
     }
 }
 
 module.exports = {
-    loadLongTermMemory,
-    recordCafeMessage,
+    loadLongTermMemory: async (db) => {
+        // 相容舊呼叫，實際在 getRoomMemory 中按需載入
+        return roomMemories;
+    },
+    recordCafeMessage: recordMessageToMemory,
     logDailyCafeMessage,
     initNightlyLearningJob,
     processAIChat
