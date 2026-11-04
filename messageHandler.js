@@ -41,24 +41,29 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
     const senderName = m.pushName || '成員';
     const isGroup = remoteJid.endsWith('@g.us');
 
-    // 1. 群組專屬動態指令手冊 (純文字極速回應)
-    if (messageContent === '!指令' || messageContent === '！指令') {
+    // 1. 群組專屬動態指令手冊 (純文字極速回應) - 包含完整教學與容錯說明
+    if (messageContent === '!指令' || messageContent === '！指令' || messageContent.toLowerCase() === '!help') {
         if (remoteJid === GROUPS.FLYER) {
-            const flyerHelp = `🌸 【花農群 (Flyer) 專用指令手冊】\n\n` +
-                            `• !id ── 自動綁定你的電話號碼\n` +
-                            `• !功課 ── 查看當前功課繳交手冊與名單\n` +
-                            `• !提醒 ── 催繳未完成功課成員\n` +
-                            `• !ai加人 [名字] ── 新增成員\n` +
-                            `• !ai刪人 [名字] ── 移除成員\n` +
-                            `• !ai清記錄 [名字] ── 重置該成員本期功課`;
+            const flyerHelp = `🌸 【花農群 (Flyer) 專用指令與操作手冊】\n\n` +
+                              `📜 **【如何繳交功課？】**\n` +
+                              `• **不用按「回覆/Quote」**！只要直接把座標、苗數、花名留在同一則訊息發出來即可。\n` +
+                              `• **AI 智慧過濾**：發佈 FB / Threads / IG 連結或社群分享貼文時，AI 會自動辨識為「社群分享」並溫馨道謝，**不會**誤扣或當成作業喔！\n\n` +
+                              `🛠️ **【常用功能指令】**\n` +
+                              `• \`!id\` ── 自動綁定你的 WhatsApp 號碼\n` +
+                              `• \`!功課\` ── 查看當前功課繳交手冊與名單\n` +
+                              `• \`!提醒\` ── 催繳未完成功課成員\n` +
+                              `• \`!ai加人 [名字]\` ── 新增成員\n` +
+                              `• \`!ai刪人 [名字]\` ── 移除成員（需 30 秒內輸入 \`!確認\`）\n` +
+                              `• \`!修改記錄 [名字] [狀態]\` ── 手動調整功課（狀態可填：\`🌸\`、\`1\`、\`2\`、\`未完成\`）\n` +
+                              `• \`!ai清記錄 [名字]\` ── 清空該成員本期功課\n\n` ;
             await sock.sendMessage(remoteJid, { text: flyerHelp }, { quoted: m });
         } else {
             const cafeHelp = `☕ 【咖啡室群 互動指令手冊】\n\n` +
-                           `🎮 !遊戲 ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
-                           `🌤️ !天氣 ── 即時天氣播報\n` +
-                           `🍔 !搵食 ── 搜尋餐廳地標\n` +
-                           `⏰ !提醒我 [時間] [內容] ── 設定個人提醒\n` +
-                           `💬 ![說話內容] ── 直接跟皮皮小管家對話`;
+                             `🎮 \`!遊戲\` ── 互動遊戲菜單（塔羅、海龜湯、猜人名）\n` +
+                             `🌤️ \`!天氣\` ── 即時天氣播報\n` +
+                             `🍔 \`!搵食\` ── 搜尋餐廳地標\n` +
+                             `⏰ \`!提醒我 [時間] [內容]\` ── 設定個人提醒\n` +
+                             `💬 \`![說話內容]\` ── 直接跟皮皮小管家對話`;
             await sock.sendMessage(remoteJid, { text: cafeHelp }, { quoted: m });
         }
         return;
@@ -109,9 +114,9 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
         // 🎮 5. 遊戲專區 (純文字選單)
         if (messageContent === '!遊戲' || messageContent === '！遊戲') {
             const gameMenu = `🎮 【皮皮小管家 遊戲選單】\n\n` +
-                           `• !運勢 ── 今日塔羅牌運勢占卜 (78張牌自行抽牌)\n` +
-                           `• !海龜湯 [簡單/normal] ── 啟動懸疑海龜湯推理\n` +
-                           `• !猜人名 ── 發起猜人名限時投票模式`;
+                             `• \`!運勢\` ── 今日塔羅牌運勢占卜 (78張牌自行抽牌)\n` +
+                             `• \`!海龜湯 [簡單/normal]\` ── 啟動懸疑海龜湯推理\n` +
+                             `• \`!猜人名\` ── 發起猜人名限時投票模式`;
             await sock.sendMessage(remoteJid, { text: gameMenu }, { quoted: m });
             return;
         }
@@ -200,7 +205,7 @@ async function handleIncomingMessage(sock, m, db, ai, homeworkData, saveHomework
                     nameGameSession.secretMasterName = senderName;
                     nameGameSession.targetName = role;
                     nameGameSession.step = 'playing';
-                    
+                     
                     await sock.sendMessage(remoteJid, { text: `✅ 設定成功！你已成為本局的秘密主持人。你的角色是：**${role}**。請回到群組一起互動，別洩漏答案喔！` });
 
                     if (nameGameSession.activeGroupJid) {
