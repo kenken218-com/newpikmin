@@ -2,6 +2,7 @@
 // 🤖 AI 聊天與長期記憶服務 (aiService.js) [Tavily 聯網終極版]
 // 包含：群組隔離記憶、Tavily 精準搜尋、嚴格防瞎編 Prompt、夜間 23:30 自動學習
 // ==========================================
+const { updateAndGetMimikiStatusText } = require('./mimikiState');
 const { PIKMIN_SYSTEM_PROMPT } = require('./config');
 const { tavily } = require('@tavily/core');
 const cron = require('node-cron');
