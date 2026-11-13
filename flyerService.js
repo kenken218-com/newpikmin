@@ -1,5 +1,5 @@
 // ==========================================
-// 🌸 花農群專用服務模組 (flyerService.js) [語法修復與防呆終極版]
+// 🌸 花農群專用服務模組 (flyerService.js) [強開不刪除、額外種花自動清理最終版]
 // ==========================================
 const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
@@ -66,7 +66,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 2. 🌸 手動修改成員功課記錄指令：!修改記錄 成員名 狀態
-    // 🛡️ 修正：兼容「記錄」與「紀錄」，並支援「種花」等中文字
     if (/^[!！]\s*修改(記|紀)錄?/.test(messageContent)) {
         const rawParam = messageContent.replace(/^[!！]\s*修改(記|紀)錄?/, '').trim();
         const parts = rawParam.split(/\s+/);
@@ -79,7 +78,6 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         const targetNameQuery = parts[0];
         const statusQuery = parts[1].toLowerCase();
 
-        // 🛡️ 清理符號進行模糊匹配
         const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
         let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(targetNameQuery));
 
@@ -236,17 +234,12 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
             let matchedName = null;
 
-            // 🔍 【第一優先】先用 WhatsApp ID (senderJid) 尋找
             if (currentJid) {
                 matchedName = Object.keys(homeworkData).find(n => homeworkData[n].id === currentJid);
             }
-
-            // 🔍 【第二優先】如果 ID 找不到，改用電話號碼 (senderPhone) 尋找
             if (!matchedName && currentPhone) {
                 matchedName = Object.keys(homeworkData).find(n => homeworkData[n].phone === currentPhone);
             }
-
-            // 🔍 【第三優先】如果電話也找不到，最後才用名字（支援忽略符號與大小寫模糊比對）尋找
             if (!matchedName) {
                 matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(currentSender));
             }
@@ -276,15 +269,25 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
 
             const alreadyCompleted = homeworkData[matchedName].flower || homeworkData[matchedName].q1 || homeworkData[matchedName].q2;
 
+            // 🧹 標記是否需要加入 50 分鐘自動刪除排程（僅限種花相關，強開不刪除）
+            let needScheduleDeletion = false;
+
             if (result === 'social_share') {
                 await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 分享的社群貼文，感謝分享！🙌（此訊息不列入功課計算喔～）` });
             } else if (result === 'need_flower_name') {
+                needScheduleDeletion = true; // 👈 補座標/種花分享要刪除
                 if (alreadyCompleted) {
                     await sock.sendMessage(remoteJid, { text: `🌱 感謝 ${currentSender} 額外分享座標！☕🌸` });
                 } else {
                     await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 嘅座標分享！請問哩度種嘅係咩花呀？（回覆花名即可記錄功課喔！）` });
                 }
             } else if (result === 'flower' || result === 'force_open_full') {
+                
+                // 💡 核心過濾：只有 result 是 'flower' 時才標記刪除；如果是 'force_open_full' (強開)，則維持 false（不刪除）！
+                if (result === 'flower') {
+                    needScheduleDeletion = true;
+                }
+
                 await backupHomeworkData();
                 if (result === 'flower') homeworkData[matchedName].flower = true;
                 else if (!homeworkData[matchedName].flower) {
@@ -299,10 +302,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                 } else {
                     await sock.sendMessage(remoteJid, { text: `✅ 收到 ${currentSender} 的功課！已更新手冊：\n\n` + generateHomeworkReport(homeworkData) });
                 }
-
-                await scheduleMultipleDeletions(remoteJid, accumulatedMsgIds, m.key.participant || remoteJid, 50 * 60 * 1000);
             } else {
-                // 💡 【核心修改】只有當累積訊息以 ! 或 ！ 開頭（代表成員嘗試輸入指令卻打錯/無效）時，才給予溫馨引導提醒
                 const isAttemptingCommand = accumulatedText.trim().startsWith('!') || accumulatedText.trim().startsWith('！');
 
                 if (!alreadyCompleted && isAttemptingCommand) {
@@ -311,6 +311,11 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                         mentions: [senderJid]
                     }, { quoted: m });
                 }
+            }
+
+            // 🧹 【條件式自動清理】只有種花或補座標訊息會被加入 50 分鐘刪除排程，強開訊息會保留不刪！
+            if (needScheduleDeletion) {
+                await scheduleMultipleDeletions(remoteJid, accumulatedMsgIds, m.key.participant || remoteJid, 50 * 60 * 1000);
             }
         } catch (e) {
             console.error('❌ 處理功課計時器錯誤:', e);
