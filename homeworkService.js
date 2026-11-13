@@ -1,111 +1,322 @@
 // ==========================================
-// 🌸 花農群功課手冊服務 (homeworkService.js)
+// 🌸 花農群專用服務模組 (flyerService.js) [額外分享自動刪除完美修正版]
 // ==========================================
+const { generateHomeworkReport, aiCheckHomeworkAdvanced } = require('./homeworkService');
 
-function getDynamicDeadlines() {
-    // 💡 設定以 10月31號為起點 (這裡以當年度的 10月31日 00:00 為例)
-    const currentYear = new Date().getFullYear();
-    const now = new Date(currentYear, 9, 31); // 註：JavaScript 的月份從 0 開始，9 代表 10月
+const userRecentMessages = {};
+
+// 🛡️ 暫存待確認的危險操作：key = 識別用key, value = { type, target, expiresAt }
+const pendingActions = {};
+
+async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, messageContent, homeworkData, saveHomeworkData, backupHomeworkData, db, ai, scheduleMultipleDeletions) {
     
-    const forceDeadlineDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const flowerDeadlineDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+    // 🛡️ 取得發言者的真實 WhatsApp ID 與電話
+    const senderJid = m.key.participant || m.key.remoteJid;
+    const actionKey = senderJid || senderPhone || senderName;
 
-    const formatDate = (date) => {
-        const day = date.getDate();
-        const monthStr = date.toLocaleString('en-US', { month: 'short' });
-        const year = date.getFullYear();
-        return `${day} ${monthStr} ${year} 截`;
-    };
-
-    return {
-        flowerDeadline: formatDate(flowerDeadlineDate),
-        force1Deadline: formatDate(forceDeadlineDate),
-        force2Deadline: formatDate(flowerDeadlineDate)
-    };
-}
-
-function generateHomeworkReport(homeworkData) {
-    let completedCount = 0, pendingCount = 0;
-    let completedList = [], pendingList = [];
-
-    for (const [name, status] of Object.entries(homeworkData)) {
-        let symbol = status.flower ? '🌸' : `${status.q1 ? '1️⃣' : ''}${status.q2 ? '2️⃣' : ''}`;
-        if (status.flower || status.q1 || status.q2) {
-            completedCount++;
-            completedList.push(`  • ${name} ${symbol}`);
-        } else {
-            pendingCount++;
-            pendingList.push(`  • ${name}`);
+    // 🛡️ 處理二次確認指令：!確認 (支援容錯空格)
+    const isConfirmCmd = /^[!！]\s*確認$/.test(messageContent);
+    if (isConfirmCmd) {
+        const pending = pendingActions[actionKey];
+        if (!pending || Date.now() > pending.expiresAt) {
+            delete pendingActions[actionKey];
+            await sock.sendMessage(remoteJid, { text: `⚠️ 目前沒有需要你確認的待執行操作，或確認時間已過期。` }, { quoted: m });
+            return;
         }
+
+        // 清除暫存
+        delete pendingActions[actionKey];
+
+        if (pending.type === 'delete_user') {
+            const name = pending.target;
+            if (homeworkData[name]) {
+                await backupHomeworkData();
+                delete homeworkData[name];
+                await saveHomeworkData(homeworkData);
+                await sock.sendMessage(remoteJid, { text: `🗑️ 【確認執行】已成功移除成員「${name}」！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
+            } else {
+                await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` }, { quoted: m });
+            }
+        } else if (pending.type === 'reset_all') {
+            await backupHomeworkData();
+            for (const name in homeworkData) {
+                homeworkData[name].flower = false;
+                homeworkData[name].q1 = false;
+                homeworkData[name].q2 = false;
+            }
+            await saveHomeworkData(homeworkData);
+            await sock.sendMessage(remoteJid, { text: `🔄 【確認執行】全新一期開始！已成功清空所有成員的本期功課記錄！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
+        }
+        return;
     }
 
-    const deadlines = getDynamicDeadlines();
-    let report = `╭──────────────────────╮\n│  🌱 花農群功課手冊公告  │\n╰──────────────────────╯\n\n`;
-    report += `📜 【繳交規則 (二選一)】\n 1️⃣ 種花：每兩週分享一次 (10苗以上)\n 2️⃣ 強開：每週兩朵任意白花 (需附2個或以上座標)\n\n`;
-    report += `⏳ 【本期自動截止時間】\n 🌸 Option 1 (種花) ── ${deadlines.flowerDeadline}\n 1️⃣ Option 2 (強開1) ── ${deadlines.force1Deadline}\n 2️⃣ Option 2 (強開2) ── ${deadlines.force2Deadline}\n─────────────────────────\n\n`;
-    report += `📊 【當前進度統計】\n ✅ 已完成：${completedCount} 人\n ⏳ 未完成：${pendingCount} 人\n─────────────────────────\n\n`;
-    report += `🌸 【已完成功課名單】\n` + (completedList.length > 0 ? completedList.join('\n') + '\n\n' : `  （無）\n\n`);
-    report += `⚠️ 【尚未完成名單】\n` + (pendingList.length > 0 ? pendingList.join('\n') + '\n\n' : `  🎉 全員已完成！\n\n`);
-    report += `💡 溫馨提示：種花分享訊息將於 50 分鐘後自動清理！`;
-    return report;
-}
-
-async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
-    try {
-        const prompt = `你是一個資深的《皮克敏 Bloom (Pikmin Bloom)》花農功課審核 AI。請仔細分析訊息內容是否為玩家繳交的功課。
-
-【重要排除規則（優先判斷）】：
-如果訊息內容包含 Facebook、FB、Threads、脆、IG、網址連結（http/https）、或是轉發外部社群貼文/新聞分享，**絕對不能**視為功課，請直接判定為「SOCIAL_SHARE」。
-
-【花農語意解析規範（泛用模式）】：
-只要訊息中出現以下**任何一種花種描述模式**，即視為「已包含花名/花種描述」：
-1. 單寫花名或品種簡寫（不帶顏色）：如「九重」、「九重葛」、「鼠尾」、「萬壽」、「睡蓮」、「向日葵」等任何花卉名稱。
-2. 顏色 + 簡寫：如「黃九」、「藍鼠」、「白蓮」、「紫萬」。
-3. 混色 / 混合字眼：如「混色」、「混」、「黃混」、「彩混」。
-4. 主花 / 副花簡稱：如「主花」、「副花」、「紅主」、「藍副」。
-5. 苗數與開花狀態：如「首開」、「最後」、「3苗」、「開完」、「差2」等種花進度用語。
-
-【審核判定規則】：
-1. 「SOCIAL_SHARE」：含有 fb, facebook, threads, 脆, ig, http/https 連結或社群分享。
-2. 「FLOWER」：含上述任意花種/混色/狀態描述，且同時包含 3 個或以上經緯度座標（無社群連結）。
-3. 「FORCE_OPEN_FULL」：含「強開」或白花/白種名稱，且包含 2 個或以上經緯度座標。
-4. 「FORCE_OPEN_NEED_MORE」：含「強開」或白花/白種名稱，但僅有 1 個經緯度座標。
-5. 「NEED_FLOWER_NAME」：提供 3 個或以上座標，但訊息完全沒有任何花名、顏色、混色或種花相關描述。
-6. 「NONE」：一般聊天、打菇、問候等非功課內容。
-
-訊息內容：
-"""
-${combinedMessageText}
-"""
-
-請嚴格只回傳以下其中一個標籤（不要有任何多餘文字或標點）：
-SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
-
-        // 🛡️ 注意：這裡模型名稱我幫你改成了目前官方支援的版本
-        // 如果你之前用的 'gemini-3.5-flash-lite' 會報錯，請保留 'gemini-1.5-flash'
-        const response = await ai.models.generateContent({ 
-            model: 'gemini-3.5-flash-lite', 
-            contents: prompt 
-        });
-        
-        const result = response.text ? response.text.trim().toUpperCase() : 'NONE';
-        
-        console.log('🤖 AI 智慧審核結果:', result);
-
-        if (result.includes('SOCIAL_SHARE')) return 'social_share';
-        if (result.includes('FLOWER')) return 'flower';
-        if (result.includes('FORCE_OPEN_FULL')) return 'force_open_full';
-        if (result.includes('FORCE_OPEN_NEED_MORE')) return 'force_open_need_more';
-        if (result.includes('NEED_FLOWER_NAME')) return 'need_flower_name';
-        return null;
-    } catch (e) { 
-        console.error('❌ AI 審核發生錯誤:', e);
-        return null; 
+    // 1. 綁定 ID (保留指令供手動校正用)
+    const isIdCmd = /^[!！]\s*id$/.test(messageContent);
+    if (isIdCmd) {
+        let matchedName = Object.keys(homeworkData).find(n => n.toLowerCase() === senderName.toLowerCase());
+        if (matchedName) {
+            homeworkData[matchedName].id = senderJid;
+            if (senderPhone) homeworkData[matchedName].phone = senderPhone;
+            await saveHomeworkData(homeworkData);
+            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已成功綁定資料：${matchedName}` }, { quoted: m });
+        } else {
+            await sock.sendMessage(remoteJid, { text: `🌱 感謝！已記錄你的 ID 與電話，未在名單中找到同名記錄。` }, { quoted: m });
+        }
+        return;
     }
+
+    // 2. 🌸 手動修改成員功課記錄指令：!修改記錄 成員名 狀態
+    if (/^[!！]\s*修改紀錄?/.test(messageContent)) {
+        const rawParam = messageContent.replace(/^[!！]\s*修改紀錄?/, '').trim();
+        const parts = rawParam.split(/\s+/);
+        
+        if (parts.length < 2) {
+            await sock.sendMessage(remoteJid, { text: `⚠️ 格式錯誤！請使用：\n!修改記錄 [成員名字] [狀態]\n(狀態可填: 🌸/已種花, q1/1, q2/2, 未完成/清空)` }, { quoted: m });
+            return;
+        }
+
+        const targetNameQuery = parts[0];
+        const statusQuery = parts[1].toLowerCase();
+
+        const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+        let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(targetNameQuery));
+
+        if (!matchedName) {
+            await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${targetNameQuery}」的成員！` }, { quoted: m });
+            return;
+        }
+
+        await backupHomeworkData();
+
+        if (statusQuery.includes('🌸') || statusQuery.includes('種花') || statusQuery.includes('flower')) {
+            homeworkData[matchedName].flower = true;
+            homeworkData[matchedName].q1 = false;
+            homeworkData[matchedName].q2 = false;
+        } else if (statusQuery === 'q1' || statusQuery === '1') {
+            homeworkData[matchedName].q1 = true;
+            homeworkData[matchedName].flower = false;
+        } else if (statusQuery === 'q2' || statusQuery === '2') {
+            homeworkData[matchedName].q2 = true;
+            homeworkData[matchedName].flower = false;
+        } else if (statusQuery.includes('未完成') || statusQuery.includes('清空') || statusQuery.includes('0')) {
+            homeworkData[matchedName].flower = false;
+            homeworkData[matchedName].q1 = false;
+            homeworkData[matchedName].q2 = false;
+        } else {
+            await sock.sendMessage(remoteJid, { text: `❌ 無效的狀態指令！支援的狀態：🌸 (種花)、q1 / q2 (強開)、未完成` }, { quoted: m });
+            return;
+        }
+
+        await saveHomeworkData(homeworkData);
+        await sock.sendMessage(remoteJid, { text: `✅ 已成功將成員「${matchedName}」的功課狀態更新！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
+        return;
+    }
+
+    // 3. 加人
+    if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人') || messageContent.startsWith('! ai加人') || messageContent.startsWith('！ ai加人')) {
+        const name = messageContent.replace(/^[!！]\s*ai加人/, '').trim();
+        if (name) {
+            await backupHomeworkData();
+            homeworkData[name] = { id: "", phone: "", flower: false, q1: false, q2: false };
+            await saveHomeworkData(homeworkData);
+            await sock.sendMessage(remoteJid, { text: `✅ 已成功新增成員「${name}」！\n\n` + generateHomeworkReport(homeworkData) });
+        }
+        return;
+    }
+
+    // 4. 刪人（改為需要二次確認）
+    if (/^[!！]\s*(ai刪人|刪人)/.test(messageContent)) {
+        const name = messageContent.replace(/^[!！]\s*(ai刪人|刪人)/, '').trim();
+        if (!homeworkData[name]) {
+            await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` }, { quoted: m });
+            return;
+        }
+
+        pendingActions[actionKey] = {
+            type: 'delete_user',
+            target: name,
+            expiresAt: Date.now() + 30000
+        };
+
+        await sock.sendMessage(remoteJid, { 
+            text: `⚠️ 【安全確認】你正在嘗試移除成員「${name}」！\n請在 **30 秒內**回覆 **「!確認」** 以完成刪除操作。` 
+        }, { quoted: m });
+        return;
+    }
+
+    // 5. 清除記錄
+    if (/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/.test(messageContent)) {
+        const name = messageContent.replace(/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/, '').trim();
+        
+        const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+        let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(name)) || name;
+
+        if (homeworkData[matchedName]) {
+            await backupHomeworkData();
+            homeworkData[matchedName].flower = false;
+            homeworkData[matchedName].q1 = false;
+            homeworkData[matchedName].q2 = false;
+            await saveHomeworkData(homeworkData);
+            await sock.sendMessage(remoteJid, { text: `🔄 已清空成員「${matchedName}」本期的功課記錄！\n\n` + generateHomeworkReport(homeworkData) });
+        }
+        return;
+    }
+
+    // 6. 提醒
+    const isReminderCmd = /^[!！]\s*提醒$/.test(messageContent);
+    if (isReminderCmd) {
+        let pendingPeopleText = [];
+        let mentions = [];
+
+        for (const [name, status] of Object.entries(homeworkData)) {
+            if (!status.flower && !status.q1 && !status.q2) {
+                if (status.id) {
+                    mentions.push(status.id);
+                    pendingPeopleText.push(`• @${status.id.split('@')[0]} (${name})`);
+                } else if (status.phone) {
+                    const targetJid = `${status.phone}@s.whatsapp.net`;
+                    mentions.push(targetJid);
+                    pendingPeopleText.push(`• @${status.phone} (${name})`);
+                } else {
+                    pendingPeopleText.push(`• ${name}`);
+                }
+            }
+        }
+
+        let text = `🔔 【功課催繳提醒】\n\n以下皮友本期尚未完成功課：\n` + (pendingPeopleText.length > 0 ? pendingPeopleText.join('\n') : `🎉 全員已完成！`);
+        text += `\n\n⚠️ 溫馨提示：本期未完成功課者將於截止後被移除！`;
+        await sock.sendMessage(remoteJid, { text, mentions }, { quoted: m });
+        return;
+    }
+
+    // 7. 功課表
+    const isHomeworkCmd = /^[!！]\s*功課$/.test(messageContent);
+    if (isHomeworkCmd) {
+        await sock.sendMessage(remoteJid, { text: generateHomeworkReport(homeworkData) }, { quoted: m });
+        return;
+    }
+
+    // 🔄 整期重置
+    const isResetAllCmd = /^[!！]\s*(ai整期重置|ai清空全部|整期重置|清空全部)$/.test(messageContent);
+    if (isResetAllCmd) {
+        pendingActions[actionKey] = {
+            type: 'reset_all',
+            expiresAt: Date.now() + 30000
+        };
+
+        await sock.sendMessage(remoteJid, { 
+            text: `⚠️ 【高風險安全確認】你正在嘗試 **清空所有成員** 的本期所有功課記錄！\n請在 **30 秒內**回覆 **「!確認」** 才會正式執行重置。` 
+        }, { quoted: m });
+        return;
+    }
+
+    // 8. 座標與功課自動審核計時器（三層遞進式比對：ID ➔ 電話 ➔ 名字）
+    if (!userRecentMessages[senderName]) {
+        userRecentMessages[senderName] = { text: '', messageIds: [] };
+    }
+    userRecentMessages[senderName].text += '\n' + messageContent;
+    userRecentMessages[senderName].messageIds.push(m.key.id);
+
+    if (userRecentMessages[senderName].timer) clearTimeout(userRecentMessages[senderName].timer);
+
+    const currentSender = senderName;
+    const currentJid = senderJid;
+    const currentPhone = senderPhone;
+    const accumulatedText = userRecentMessages[currentSender].text;
+    const accumulatedMsgIds = [...userRecentMessages[currentSender].messageIds];
+
+    userRecentMessages[currentSender].timer = setTimeout(async () => {
+        try {
+            const result = await aiCheckHomeworkAdvanced(accumulatedText, ai);
+            
+            const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+            let matchedName = null;
+
+            // 🔍 【第一優先】先用 WhatsApp ID (senderJid) 尋找
+            if (currentJid) {
+                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].id === currentJid);
+            }
+
+            // 🔍 【第二優先】如果 ID 找不到，改用電話號碼 (senderPhone) 尋找
+            if (!matchedName && currentPhone) {
+                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].phone === currentPhone);
+            }
+
+            // 🔍 【第三優先】如果電話也找不到，最後才用名字（支援忽略符號與大小寫模糊比對）尋找
+            if (!matchedName) {
+                matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(currentSender));
+            }
+
+            if (!matchedName) {
+                matchedName = currentSender;
+                homeworkData[matchedName] = { id: currentJid || "", phone: currentPhone || "", flower: false, q1: false, q2: false };
+            } else {
+                if (matchedName !== currentSender && !homeworkData[currentSender]) {
+                    await backupHomeworkData();
+                    homeworkData[currentSender] = { 
+                        ...homeworkData[matchedName], 
+                        id: currentJid || homeworkData[matchedName].id, 
+                        phone: currentPhone || homeworkData[matchedName].phone 
+                    };
+                    delete homeworkData[matchedName];
+                    matchedName = currentSender;
+                }
+
+                if (currentJid && !homeworkData[matchedName].id) {
+                    homeworkData[matchedName].id = currentJid;
+                }
+                if (currentPhone && !homeworkData[matchedName].phone) {
+                    homeworkData[matchedName].phone = currentPhone;
+                }
+            }
+
+            const alreadyCompleted = homeworkData[matchedName].flower || homeworkData[matchedName].q1 || homeworkData[matchedName].q2;
+
+            if (result === 'social_share') {
+                await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 分享的社群貼文，感謝分享！🙌（此訊息不列入功課計算喔～）` });
+            } else if (result === 'need_flower_name') {
+                if (alreadyCompleted) {
+                    await sock.sendMessage(remoteJid, { text: `🌱 感謝 ${currentSender} 額外分享座標！☕🌸` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 嘅座標分享！請問哩度種嘅係咩花呀？（回覆花名即可記錄功課喔！）` });
+                }
+            } else if (result === 'flower' || result === 'force_open_full') {
+                await backupHomeworkData();
+                if (result === 'flower') homeworkData[matchedName].flower = true;
+                else if (!homeworkData[matchedName].flower) {
+                    if (!homeworkData[matchedName].q1) homeworkData[matchedName].q1 = true;
+                    else homeworkData[matchedName].q2 = true;
+                }
+
+                await saveHomeworkData(homeworkData);
+
+                if (alreadyCompleted) {
+                    await sock.sendMessage(remoteJid, { text: `🌱 ${currentSender} 早已完成功課，感激你的額外分享！☕🌸` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: `✅ 收到 ${currentSender} 的功課！已更新手冊：\n\n` + generateHomeworkReport(homeworkData) });
+                }
+            } else {
+                const isAttemptingCommand = accumulatedText.trim().startsWith('!') || accumulatedText.trim().startsWith('！');
+
+                if (!alreadyCompleted && isAttemptingCommand) {
+                    await sock.sendMessage(remoteJid, { 
+                        text: `🌱 哎呀 @${currentSender}，小助手睇唔太明哩個指令喎～\n如果是第一次交功課或唔知點樣打，可以隨時輸入 **!指令** 查看花農群操作手冊喔！`,
+                        mentions: [senderJid]
+                    }, { quoted: m });
+                }
+            }
+
+            // 🧹 【全方位修復】不論是第一次交功課、缺花名補充，還是早已完成後的額外座標分享，只要包含有效座標與內容，統統加入 50 分鐘後自動清理排程！
+            if (result === 'flower' || result === 'force_open_full' || result === 'need_flower_name') {
+                await scheduleMultipleDeletions(remoteJid, accumulatedMsgIds, m.key.participant || remoteJid, 50 * 60 * 1000);
+            }
+
+        } catch (e) {
+            console.error('❌ 處理功課計時器錯誤:', e);
+        } finally {
+            delete userRecentMessages[currentSender];
+        }
+    }, 15000); // 15秒快速響應
 }
 
-// 🛡️ 最關鍵的一步：導出這兩個函數給 flyerService.js 使用！
-module.exports = {
-    generateHomeworkReport,
-    aiCheckHomeworkAdvanced
-};
+module.exports = { handleFlyerMessage };
