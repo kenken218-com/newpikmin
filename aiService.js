@@ -224,9 +224,9 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     // 🔍 模糊意圖判斷
     const isAmbiguous = query === '幫我' || query === '幫幫我';
     if (isAmbiguous) {
-        let replyText = `🌱 收到！請問需要皮皮小管家幫你查咩資料或處理咩事呀？直接話我知得架啦～`;
+        let replyText = `🌱 收到！請問需要敏敏幫你查咩資料或處理咩事呀？直接話我知得架啦～`;
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
-        await recordMessageToMemory(db, remoteJid, '皮皮小管家', 'assistant', replyText);
+        await recordMessageToMemory(db, remoteJid, '敏敏', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
         return;
     }
@@ -239,7 +239,6 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     if (hasStrongIntent) {
         const searchResults = await searchWeb(query);
         
-        // 🛡️ 嚴格區分：有沒有搜到東西？
         if (searchResults && searchResults.trim().length > 10) {
             webSearchContext = `\n【🌐 網路即時搜尋結果】:\n${searchResults}\n`;
         } else {
@@ -247,10 +246,16 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         }
     }
 
+    // ==========================================
+    // 💡 【把這行加在這裡】取得敏敏的即時狀態與好感度描述
+    // ==========================================
+    const mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName);
+
     const userTraits = memory.userProfiles[senderName] || [];
     const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期印象是：[${userTraits.join(', ')}]` : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
     const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
 
+    // 組合進 fullPrompt 裡面
     const fullPrompt = `
 ${mimikiStatusText}
 
