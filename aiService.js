@@ -1,9 +1,9 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js) [Tavily 聯網終極版]
-// 包含：群組隔離記憶、Tavily 精準搜尋、嚴格防瞎編 Prompt、夜間 23:30 自動學習
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [敏敏咖啡室專屬狀態版]
+// 包含：群組隔離記憶、咖啡室專屬飽足度/好感度、Tavily 精準搜尋、嚴格防瞎編 Prompt、夜間 23:30 自動學習
 // ==========================================
+const { PIKMIN_SYSTEM_PROMPT, GROUPS } = require('./config');
 const { updateAndGetMimikiStatusText } = require('./mimikiState');
-const { PIKMIN_SYSTEM_PROMPT } = require('./config');
 const { tavily } = require('@tavily/core');
 const cron = require('node-cron');
 
@@ -51,7 +51,7 @@ async function recordMessageToMemory(db, remoteJid, senderName, role, text) {
     await saveLongTermMemory(db, remoteJid);
 }
 
-// 📝 記錄 Coffee 群的所有對話（供日結學習使用）
+// 📝 記錄群組的所有對話（供日結學習使用）
 async function logDailyCafeMessage(db, remoteJid, senderName, text) {
     if (!db) return;
     try {
@@ -141,7 +141,6 @@ ${dailyChatText}
 // 🌐 透過 Tavily API 進行精準聯網搜尋（包含智慧摘要）
 async function searchWeb(query) {
     try {
-        // 清理關鍵字，避免把口語帶進去搜尋
         let cleanQuery = query
             .replace(/幫我上網/g, '')
             .replace(/幫我網上/g, '')
@@ -157,21 +156,18 @@ async function searchWeb(query) {
 
         console.log(`🌐 [Tavily 搜尋] 正在聯網搜尋: "${cleanQuery}"`);
 
-        // 初始化 Tavily 客戶端 (從環境變數讀取)
         const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
 
         const response = await tvly.search(cleanQuery, {
-            searchDepth: "basic",   // basic 每次消耗 1 credit，對 Render 效能最好
-            maxResults: 15,          // 抓取前 10 條結果
-            includeAnswer: true     // 🔥 關鍵：讓 Tavily 直接生成結構化摘要，輕量模型最愛
+            searchDepth: "basic",
+            maxResults: 15,
+            includeAnswer: true
         });
 
-        // 1. 優先使用 Tavily 生成的綜合摘要
         if (response.answer) {
             return `【Tavily 搜尋摘要】:\n${response.answer}`;
         }
 
-        // 2. 如果沒有摘要，則回傳具體的網頁標題與內容
         if (response.results && response.results.length > 0) {
             return response.results
                 .slice(0, 4)
@@ -247,15 +243,17 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     }
 
     // ==========================================
-    // 💡 【把這行加在這裡】取得敏敏的即時狀態與好感度描述
+    // ☕ 僅在「咖啡室群組 (CAFE)」啟用敏敏飽足度與好感度系統
     // ==========================================
-    const mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName);
+    let mimikiStatusText = '';
+    if (remoteJid === GROUPS.CAFE) {
+        mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName);
+    }
 
     const userTraits = memory.userProfiles[senderName] || [];
     const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期印象是：[${userTraits.join(', ')}]` : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
     const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
 
-    // 組合進 fullPrompt 裡面
     const fullPrompt = `
 ${mimikiStatusText}
 
@@ -267,13 +265,12 @@ ${profileText}
 ${historyText}
 
 現在 ${senderName} 對你說："${query}"
-⚠️ 【嚴格回答守則】：
-1. 如果你看到【⚠️ 系統緊急提示】，代表你現在沒有聯網。請直接用廣東話承認：「哎呀，我暫時連唔到新聞網/網路，搵唔到最新嘅資料呀，陣間再幫你試下！」，**絕對不准**用「大型盛事」、「民生政策」、「各項措施」等空泛廢話來敷衍。
-2. 如果你看到【🌐 網路即時搜尋結果】，請從中提取 **3 到 4 件最核心的具體事件**（例如：邊個官員講咗咩、邊度發生咗咩事、具體政策係咩），用香港廣東話總結給我聽。
-3. 請保持「皮皮小管家」親切活潑的語氣，但內容必須「有料」，不要講廢話。
-4. 請結合你的【敏敏即時狀態】（例如飽足度 100% 時要表現得超開心並拒絕繼續餵食；肚餓時要撒嬌討精華；對好感度高等級的成員要更加親切熱情），保持咖啡室看板娘的活潑語氣。
-請回覆：`;
 
+⚠️ 【嚴格回答守則】：
+1. 如果你看到【⚠️ 系統緊急提示】，代表你現在沒有聯網。請直接用廣東話承認：「哎呀，我暫時連唔到新聞網/網路，搵唔到最新嘅資料呀，陣間再試下！」，**絕對不准**用「大型盛事」、「民生政策」、「各項措施」等空泛廢話來敷衍。
+2. 如果你看到【🌐 網路即時搜尋結果】，請從中提取 **3 到 4 件最核心的具體事件**（例如：邊個官員講咗咩、邊度發生咗咩事、具體政策係咩），用香港廣東話總結給我聽。
+3. ${remoteJid === GROUPS.CAFE ? '請結合你的【敏敏即時狀態與好感度】（例如飽足度 100% 時要表現得超開心並撒嬌拒絕繼續餵食；肚餓時要討精華；對好感度高等級的成員要更加親切熱情），保持咖啡室看板娘的活潑語氣。' : '請保持「敏敏」親切活潑的語氣，但內容必須「有料」，不要講廢話。'}
+請回覆：`;
 
     let replyText = '';
     try {
@@ -289,13 +286,13 @@ ${historyText}
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
             console.error('❌ OpenRouter 備用線路也發生錯誤:', err2);
-            replyText = '🌱 哎呀，皮皮小管家同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
+            replyText = '🌱 哎呀，敏敏同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
         }
     }
 
     if (replyText) {
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
-        await recordMessageToMemory(db, remoteJid, '皮皮小管家', 'assistant', replyText);
+        await recordMessageToMemory(db, remoteJid, '敏敏', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
     }
 }
