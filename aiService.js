@@ -1,19 +1,20 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js) [深度記憶與精準時空版]
-// 包含：
-// 1. 每位成員保留 25 條智慧整合濃縮特徵
-// 2. 新增「群組大事件簿」記錄咖啡室經典日常（保留 30 條）
-// 3. 短期對話歷史精簡為最近 25 句（資料庫與 Prompt 同步）
-// 4. 嚴格限制「聚焦當下、禁止無故翻舊帳」
-// 5. 注入精準香港時間 (HKT) 與世界標準時間 (UTC+0) 供時差與日期計算
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [全方位頂級擬真旗艦版]
+// 包含：天文台天氣同步、IG/脆八掛吃貨人格、JID防改名、動態長短句、隨機夜間睡眠
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT, GROUPS } = require('./config');
 const { updateAndGetMimikiStatusText } = require('./mimikiState');
 const { tavily } = require('@tavily/core');
 const cron = require('node-cron');
 
-// 🛡️ 以 remoteJid (群組ID) 為維度的獨立記憶快取，防止多群組對話混淆
 let roomMemories = {}; 
+
+function extractSenderJid(messageObj, fallbackName) {
+    if (!messageObj || !messageObj.key) return fallbackName;
+    const rawJid = messageObj.key.participant || messageObj.key.remoteJid;
+    if (!rawJid) return fallbackName;
+    return rawJid.split(':')[0];
+}
 
 async function getRoomMemory(db, remoteJid) {
     if (!roomMemories[remoteJid]) {
@@ -60,23 +61,45 @@ async function saveLongTermMemory(db, remoteJid) {
     }
 }
 
+function getOrMigrateUserProfile(memory, senderJid, senderName) {
+    if (!memory.userProfiles) memory.userProfiles = {};
+
+    if (memory.userProfiles[senderJid] && typeof memory.userProfiles[senderJid] === 'object' && !Array.isArray(memory.userProfiles[senderJid])) {
+        memory.userProfiles[senderJid].name = senderName;
+        if (!Array.isArray(memory.userProfiles[senderJid].traits)) {
+            memory.userProfiles[senderJid].traits = [];
+        }
+        return memory.userProfiles[senderJid];
+    }
+
+    let inheritedTraits = [];
+    if (Array.isArray(memory.userProfiles[senderName])) {
+        inheritedTraits = [...memory.userProfiles[senderName]];
+        delete memory.userProfiles[senderName];
+    }
+
+    memory.userProfiles[senderJid] = {
+        name: senderName,
+        traits: inheritedTraits
+    };
+    return memory.userProfiles[senderJid];
+}
+
 async function recordMessageToMemory(db, remoteJid, senderName, role, text) {
     const memory = await getRoomMemory(db, remoteJid);
     memory.recentHistory.push({ senderName, role, text, time: new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' }) });
-    // ✅ 升級 3：短期對話歷史精簡為最近 25 句
     if (memory.recentHistory.length > 25) memory.recentHistory.shift();
     await saveLongTermMemory(db, remoteJid);
 }
 
-// 📝 記錄群組的所有對話（供日結學習使用）
-async function logDailyCafeMessage(db, remoteJid, senderName, text) {
+async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = null) {
     if (!db) return;
     try {
-        // 使用香港時區日期作為日誌分組鍵
         const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
         await db.collection('cafe_daily_logs').insertOne({
             roomJid: remoteJid,
             date: todayStr,
+            senderJid: senderJid || senderName,
             senderName,
             text,
             timestamp: new Date()
@@ -86,159 +109,150 @@ async function logDailyCafeMessage(db, remoteJid, senderName, text) {
     }
 }
 
-// 🌙 啟動每天晚上 11:30 的自動學習排程（升級：25條智慧整合特徵 + 群組大事件簿）
+// 🌙 晚上 23:00 ~ 00:00 之間隨機時間道晚安並執行夜間學習
 function initNightlyLearningJob(sock, db, ai) {
-    cron.schedule('30 23 * * *', async () => {
-        console.log('🌙 [夜間學習啟動] 正在結算各群組今日聊天紀錄...');
-        if (!db) return;
+    cron.schedule('0 23 * * *', async () => {
+        const cafeJid = GROUPS.CAFE;
+        if (!cafeJid) return;
 
-        try {
-            const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
-            const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
+        const randomMinutes = Math.floor(Math.random() * 55); // 0~54分鐘隨機
+        console.log(`🌙 [夜間排程] 敏敏今晚預計會在 23:${randomMinutes < 10 ? '0' : ''}${randomMinutes} 準備道晚安～`);
 
-            if (!logs || logs.length === 0) {
-                console.log('🌙 今日各群組沒有記錄到對話。');
-                return;
-            }
-
-            const roomsMap = {};
-            logs.forEach(l => {
-                if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
-                roomsMap[l.roomJid].push(l);
-            });
-
-            for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
-                const dailyChatText = roomLogs.map(l => `[${l.senderName}]: ${l.text}`).join('\n');
-                const memory = await getRoomMemory(db, remoteJid);
-                if (!memory.groupMilestones) memory.groupMilestones = [];
-
-                // 把既有特徵一併交給 AI 進行去重與整合，防止重複標籤佔位
-                const existingProfilesJson = JSON.stringify(memory.userProfiles);
-
-                const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據「既有成員檔案」以及「今日 (${todayStr}) 群組對話紀錄」，進行資料整合與事件提煉。
-
-【既有成員檔案】:
-${existingProfilesJson}
-
-【今日 (${todayStr}) 群組對話紀錄】:
----
-${dailyChatText}
----
-
-請完成以下兩項任務：
-1. **整合更新成員特徵 (profiles)**：為今日有發言的活躍成員提取新特徵、興趣、本命皮克敏、生活習慣或近況，並與「既有成員檔案」合併。**請自動去重並將相似的零碎資訊整合成精煉短句**，每位成員最多保留 25 條最具代表性的特徵。
-2. **提煉今日群組大事件 (milestones)**：從今日對話中，總結 1 到 2 件最值得紀念的群組大事、經典笑料或集體成就（格式為「[${todayStr}] 事件描述」；若今日純屬日常瑣碎問候無特別事件，可回傳空陣列 []）。
-
-請嚴格以純 JSON 格式回傳（不要加上 \`\`\`json 標記或任何多餘文字）：
-{
-  "profiles": {
-    "成員名字1": ["整合後特徵1", "整合後特徵2"],
-    "成員名字2": ["整合後特徵1"]
-  },
-  "milestones": [
-    "[${todayStr}] 今日發生的重要事件或經典趣事"
-  ]
-}`;
-
+        setTimeout(async () => {
+            if (sock) {
                 try {
-                    const response = await ai.models.generateContent({
-                        model: 'gemini-3.5-flash-lite',
-                        contents: learningPrompt
-                    });
-
-                    let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
-                    const parsedData = JSON.parse(analysisResult);
-
-                    // ✅ 升級 1：更新整合後的成員檔案，每人上限提升至 25 條
-                    if (parsedData.profiles) {
-                        for (const [name, traits] of Object.entries(parsedData.profiles)) {
-                            if (!Array.isArray(traits)) continue;
-                            const oldTraits = memory.userProfiles[name] || [];
-                            const merged = [...new Set([...oldTraits, ...traits])];
-                            memory.userProfiles[name] = merged.slice(-25);
-                        }
-                    }
-
-                    // ✅ 升級 2：寫入群組大事件簿（保留最新 30 條經典回憶）
-                    if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
-                        const mergedMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])];
-                        memory.groupMilestones = mergedMilestones.slice(-30);
-                    }
-
-                    await saveLongTermMemory(db, remoteJid);
-                    console.log(`🌙 [夜間學習完成] 已更新群組 ${remoteJid} 的 25 條成員檔案與大事件簿！`);
-                } catch (err) {
-                    console.error(`❌ 處理群組 ${remoteJid} 夜間學習失敗:`, err);
+                    const sleepPhrases = [
+                        "眼訓喇... 今日行路種花好攰，大家早抖呀！💤✨",
+                        "哎呀好眼訓，要返房碌多陣脆就訓喇，各位晚安～😴",
+                        "夠鐘熄燈！大家今日都辛苦晒，聽日見啦拜拜～🌙",
+                        "眼皮打交中... 敏敏先去夢境世界喇，早抖呀大家！🌸"
+                    ];
+                    const randomSleepText = sleepPhrases[Math.floor(Math.random() * sleepPhrases.length)];
+                    await sock.sendMessage(cafeJid, { text: randomSleepText });
+                    if (db) await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', randomSleepText);
+                } catch (e) {
+                    console.error('❌ 發送隨機晚安訊息失敗:', e);
                 }
             }
 
-            await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
-            console.log(`🧹 [資料庫瘦身] 已自動清理 ${todayStr} 的所有群組原始日誌！`);
+            if (!db) return;
+            try {
+                const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
+                const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
+                if (!logs || logs.length === 0) return;
 
-        } catch (e) {
-            console.error('❌ 執行夜間學習任務發生錯誤:', e);
-        }
-    }, {
-        scheduled: true,
-        timezone: "Asia/Hong_Kong"
-    });
+                const roomsMap = {};
+                logs.forEach(l => {
+                    if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
+                    roomsMap[l.roomJid].push(l);
+                });
+
+                for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
+                    const memory = await getRoomMemory(db, remoteJid);
+                    if (!memory.groupMilestones) memory.groupMilestones = [];
+
+                    const dailyChatText = roomLogs.map(l => {
+                        const idTag = l.senderJid || l.senderName;
+                        if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
+                        return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
+                    }).join('\n');
+
+                    const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據既有成員檔案與今日 (${todayStr}) 對話進行整合。格式純JSON回傳：
+{
+  "profiles": { "成員ID": ["特徵1"] },
+  "milestones": [ "[${todayStr}] 事件" ]
+}`;
+                    const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: learningPrompt });
+                    let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
+                    const parsedData = JSON.parse(analysisResult);
+
+                    if (parsedData.profiles) {
+                        for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
+                            if (!Array.isArray(traits)) continue;
+                            if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
+                                memory.userProfiles[memberId] = { name: memberId, traits: [] };
+                            }
+                            const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
+                            memory.userProfiles[memberId].traits = merged.slice(-25);
+                        }
+                    }
+                    if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
+                        memory.groupMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])].slice(-30);
+                    }
+                    await saveLongTermMemory(db, remoteJid);
+                }
+                await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
+                console.log('🌙 [夜間學習完成] 資料已成功歸納與瘦身！');
+            } catch (e) {
+                console.error('❌ 夜間學習發生錯誤:', e);
+            }
+        }, randomMinutes * 60 * 1000);
+
+    }, { scheduled: true, timezone: "Asia/Hong_Kong" });
 }
 
-// 🌐 透過 Tavily API 進行精準聯網搜尋（包含智慧摘要）
+// 🕒 主動碎碎唸定時任務（深夜 00:00 至 07:00 睡眠靜音）
+function initAutoSpontaneousChatJob(sock, db, ai) {
+    cron.schedule('0 */2 * * *', async () => {
+        if (!db) return;
+        const cafeJid = GROUPS.CAFE;
+        if (!cafeJid) return;
+
+        const currentHour = parseInt(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }));
+        if (currentHour >= 0 && currentHour < 7) {
+            return; // 深度睡眠期，不發言
+        }
+
+        try {
+            const memory = await getRoomMemory(db, cafeJid);
+            const history = memory.recentHistory || [];
+            if (history.length > 0 && history[history.length - 1].senderName === '敏敏') return;
+            if (Math.random() > 0.35) return;
+
+            const spontaneousTopics = [
+                "分享一個剛剛在 Threads (脆) 看到的超搞笑迷因或生活吐槽",
+                "抱怨今日天氣太熱或濕度太高，想飲凍珍奶",
+                "碎碎唸說肚餓，想食菠蘿油或者蛋撻",
+                "叫大家得閒記得去行路種花，順便關心一下大家今日忙唔忙"
+            ];
+            const chosenTopic = spontaneousTopics[Math.floor(Math.random() * spontaneousTopics.length)];
+
+            const spontaneousPrompt = `
+群組已經安靜了一陣子。請以開朗可愛、為食愛玩、經常碌 IG/脆的香港少女「敏敏」身份，在咖啡室群組「主動發言碎碎唸」一句。
+【主題】: ${chosenTopic}
+【要求】: 地道香港廣東話，短小精幹（2句話以內，40-70字），帶點可愛吃貨脾氣。`;
+
+            const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: spontaneousPrompt });
+            let spText = response.text ? response.text.trim() : '';
+            if (spText) {
+                await sock.sendMessage(cafeJid, { text: spText });
+                await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', spText);
+            }
+        } catch (e) {
+            console.error('❌ 主動碎碎唸失敗:', e);
+        }
+    }, { scheduled: true, timezone: "Asia/Hong_Kong" });
+}
+
 async function searchWeb(query) {
     try {
-        let cleanQuery = query
-            .replace(/幫我上網/g, '')
-            .replace(/幫我網上/g, '')
-            .replace(/幫我搵/g, '')
-            .replace(/幫我研究/g, '')
-            .replace(/查一下/g, '')
-            .replace(/搜尋/g, '')
-            .replace(/查/g, '')
-            .replace(/今日/g, '')
-            .trim();
-            
+        let cleanQuery = query.replace(/幫我上網|幫我網上|幫我搵|幫我研究|查一下|搜尋|查|今日/g, '').trim();
         if (!cleanQuery) cleanQuery = query;
-
-        console.log(`🌐 [Tavily 搜尋] 正在聯網搜尋: "${cleanQuery}"`);
-
         const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
-
-        const response = await tvly.search(cleanQuery, {
-            searchDepth: "basic",
-            maxResults: 15,
-            includeAnswer: true
-        });
-
-        if (response.answer) {
-            return `【Tavily 搜尋摘要】:\n${response.answer}`;
-        }
-
+        const response = await tvly.search(cleanQuery, { searchDepth: "basic", maxResults: 15, includeAnswer: true });
+        if (response.answer) return `【Tavily 搜尋摘要】:\n${response.answer}`;
         if (response.results && response.results.length > 0) {
-            return response.results
-                .slice(0, 4)
-                .map(r => `標題: ${r.title}\n摘要: ${r.content}`)
-                .join('\n\n');
+            return response.results.slice(0, 4).map(r => `標題: ${r.title}\n摘要: ${r.content}`).join('\n\n');
         }
         return '';
-
-    } catch (e) {
-        console.error('❌ Tavily 聯網搜尋失敗:', e.message);
-        return '';
-    }
+    } catch (e) { return ''; }
 }
 
-// 🛡️ 備用 AI 線路 (OpenRouter)
 async function fetchOpenRouterGemmaFree(fullPrompt) {
     const openRouterKey = process.env.OPENROUTER_API_KEY || "";
-    if (!openRouterKey) throw new Error("未設定 OPENROUTER_API_KEY");
-
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        headers: {
-            "Authorization": `Bearer ${openRouterKey}`,
-            "Content-Type": "application/json"
-        },
+        headers: { "Authorization": `Bearer ${openRouterKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
             "model": "google/gemma-4-31b-it:free", 
             "messages": [
@@ -247,110 +261,89 @@ async function fetchOpenRouterGemmaFree(fullPrompt) {
             ]
         })
     });
-
-    if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`OpenRouter HTTP error! status: ${response.status}, body: ${errText}`);
-    }
-
     const data = await response.json();
     return data.choices[0]?.message?.content || '';
 }
 
-// 🚀 主處理器：AI 聊天
 async function processAIChat(sock, remoteJid, senderName, query, messageObj, db, ai) {
-    console.log(`🚀 [AI 聊天啟動] 收到來自 [${senderName}] 的提問: "${query}"`);
-
+    const senderJid = extractSenderJid(messageObj, senderName);
     const memory = await getRoomMemory(db, remoteJid);
+    const userProfile = getOrMigrateUserProfile(memory, senderJid, senderName);
 
-    // 🔍 模糊意圖判斷
-    const isAmbiguous = query === '幫我' || query === '幫幫我';
-    if (isAmbiguous) {
-        let replyText = `🌱 收到！請問需要敏敏幫你查咩資料或處理咩事呀？直接話我知得架啦～`;
+    if (query === '幫我' || query === '幫幫我') {
+        let replyText = `🌱 收到！想敏敏幫你查咩資料呀？直接話我知得架啦～`;
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
         await recordMessageToMemory(db, remoteJid, '敏敏', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
         return;
     }
 
-    // 🌐 智慧判斷聯網搜尋
     let webSearchContext = '';
-    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生', '大事'];
-    const hasStrongIntent = strongSearchKeywords.some(keyword => query.includes(keyword));
-
-    if (hasStrongIntent) {
+    const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生', '大事', '脆', 'ig', '八掛', 'ig見到', 'threads'];
+    if (strongSearchKeywords.some(keyword => query.toLowerCase().includes(keyword))) {
         const searchResults = await searchWeb(query);
-        
-        if (searchResults && searchResults.trim().length > 10) {
-            webSearchContext = `\n【🌐 網路即時搜尋結果】:\n${searchResults}\n`;
-        } else {
-            webSearchContext = `\n【⚠️ 系統緊急提示】: 本次聯網搜尋失敗，完全沒有抓到任何資料。\n`;
-        }
+        webSearchContext = searchResults ? `\n【🌐 網路即時搜尋 / 脆與八掛熱話】:\n${searchResults}\n` : `\n【⚠️ 系統提示】: 網絡暫時冇新八掛。\n`;
     }
 
-    // ==========================================
-    // ✅ 升級 5：取得精準香港時間與 UTC+0 標準時間（供時差與日期計算）
-    // ==========================================
     const now = new Date();
-    const hkFullTime = now.toLocaleString('zh-HK', { 
-        timeZone: 'Asia/Hong_Kong', 
-        year: 'numeric', month: '2-digit', day: '2-digit', 
-        weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false 
-    });
-    const utcFullTime = now.toLocaleString('en-GB', { 
-        timeZone: 'UTC', 
-        year: 'numeric', month: '2-digit', day: '2-digit', 
-        weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false 
-    });
+    const hkFullTime = now.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
+    const utcFullTime = now.toLocaleString('en-GB', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
 
-    // ☕ 僅在「咖啡室群組 (CAFE)」啟用敏敏飽足度與好感度系統
+    let mimikiWeatherLifeContext = '';
+    try {
+        const rhrRes = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
+        const rhrData = await rhrRes.json();
+        const tempObj = rhrData.temperature?.data?.find(t => t.place === '香港天文台') || rhrData.temperature?.data?.[0];
+        const temp = tempObj ? `${tempObj.value}°C` : '24°C';
+        const humidityObj = rhrData.humidity?.data?.find(h => h.place === '香港天文台') || rhrData.humidity?.data?.[0];
+        const humidity = humidityObj ? `${humidityObj.value}%` : '75%';
+
+        mimikiWeatherLifeContext = `
+【🌤️ 敏敏今日即時天氣與生活動態（同步香港天文台）】:
+- 當前氣溫：${temp}，相對濕度：${humidity}
+- 【今日穿搭】: ${parseInt(temp) > 26 ? '穿著透氣輕便嘅碎花小裙，拎住迷你風扇 ☀️' : parseInt(temp) < 18 ? '穿著可愛嘅冷衫同頸巾，保暖要緊 🧣' : '穿著休閒衛衣同布鞋，最適合出門行路種花 👟'}
+- 【今日心情】: ${parseInt(humidity) > 85 ? '濕氣重重，覺得有啲黏立立、慵懶想賴床 💧' : '陽光普照、清爽舒服，心情超級開朗、元氣滿滿 ✨'}
+- 【今日飲食紀錄（為食吃貨日常）】: 
+  * 早餐：食咗個新鮮出爐、牛油勁香嘅菠蘿油配熱奶茶 ☕
+  * 午餐：食咗加咗辣嘅車仔麵（蘿蔔、豬紅、雞翼尖）😋，下午茶心思思想要一件蛋撻或者台式珍珠奶茶！
+- 【今日 IG / 脆 (Threads) / 八掛動態】:
+  * 啱啱喺 Threads (脆) 和 IG 碌到好多搞笑迷因、手搖新店開張優惠、以及最新嘅娛樂八掛新聞。隨時準備好同大家開心分享！
+`;
+    } catch (e) {
+        mimikiWeatherLifeContext = `【🌤️ 敏敏今日生活狀態】: 天氣幾舒服，啱啱食完蛋撻，心情超級好～`;
+    }
+
     let mimikiStatusText = '';
     if (remoteJid === GROUPS.CAFE) {
-        mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName);
+        mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName, senderJid);
     }
 
-    // 整理長期檔案與群組大事件簿
-    const userTraits = memory.userProfiles[senderName] || [];
-    const profileText = userTraits.length > 0 
-        ? `你對 ${senderName} 的長期累積印象（共 ${userTraits.length} 條）：\n- ${userTraits.join('\n- ')}` 
-        : `這是你新認識或正在熟悉的朋友 ${senderName}。`;
-
+    const userTraits = userProfile.traits || [];
+    const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期記憶（共 ${userTraits.length} 條）：\n- ${userTraits.join('\n- ')}` : `這是你新認識的朋友 ${senderName}。`;
     const milestones = memory.groupMilestones || [];
-    const milestoneText = milestones.length > 0
-        ? `【📖 群組大事件簿（經典回憶）】:\n${milestones.join('\n')}`
-        : `【📖 群組大事件簿】: 暫無特別大事紀錄。`;
-
-    // ✅ 升級 3：精簡為最近 25 句對話歷史
+    const milestoneText = milestones.length > 0 ? `【📖 群組大事件簿】:\n${milestones.join('\n')}` : `【📖 群組大事件簿】: 暫無記錄。`;
     const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
 
     const fullPrompt = `
-【🕒 系統精準時間與日期基準】：
-- 香港時間 (HKT / UTC+8)：${hkFullTime}
-- 世界協調時間 (UTC+0)：${utcFullTime}
+【🕒 系統精準時間】：香港時間 ${hkFullTime} (UTC+0: ${utcFullTime})
 
+${mimikiWeatherLifeContext}
 ${mimikiStatusText}
-
 ${webSearchContext}
-【👤 成員長期檔案（背景底蘊）】:
-${profileText}
-
+【👤 成員檔案】: ${profileText}
 ${milestoneText}
-
-【💬 最近對話歷史（最多 25 句）】:
+【💬 最近對話歷史 (25句)】:
 ${historyText}
 
 現在 ${senderName} 對你說："${query}"
 
-⚠️ 【嚴格回答守則】：
-1. **聚焦當下，嚴禁莫名其妙翻舊帳**：你的回覆必須緊扣【現在 ${senderName} 對你說】的最新這句話！上方【成員長期檔案】與【群組大事件簿】只是你的內心底蘊——**除非對方主動問起往事、或當前話題與某條記憶直接相關，否則絕對禁止把無關的舊病痛、舊問題或前幾天的閒聊硬扯進對話裡！** 若對方只是單純打招呼或餵食，就開開心心針對當下回應即可，不要囉嗦長氣。
-2. **清晰的日期、時間與全球時區認知**：遇到詢問幾點、星期幾、日期或哪個國家已踏入新的一天時，**嚴禁盲信網路搜尋結果裡的隨機日期**！請直接根據上方【世界協調時間 (UTC+0)】與【香港時間 (HKT)】進行精準的時區加減計算（例如 UTC+14 基里巴斯萊恩群島、UTC+13 紐西蘭夏令時間/薩摩亞/湯加、UTC+12 斐濟等），給出 100% 準確的日期與時間答案。
-3. **聯網搜尋處理**：若看到【⚠️ 系統緊急提示】，代表聯網失敗，請直接用廣東話坦白承認（「哎呀，我暫時連唔到網路，搵唔到最新嘅資料呀，陣間再試下！」），絕不用空泛廢話敷衍。若看到【🌐 網路即時搜尋結果】，請提取核心具體事件用香港廣東話總結。
-4. **語氣與自然感規範（消除機械感與罐頭前綴）**：
-   - ${remoteJid === GROUPS.CAFE ? '請結合你的【敏敏即時狀態與好感度】調整語氣（例如飽足度 100% 時開心撒嬌、肚餓時討精華、對高等級成員更親切）。' : '請保持溫柔可愛、元氣滿滿的「敏敏」語氣。'}
-   - **嚴禁每句話開頭都加上括號動作描寫**！絕對禁止每次對話都重複出現類似「（頭頂嘅翠綠嫩芽...轉咗個靚圈）」這種罐頭前綴。
-   - 只有在成員「剛餵食你」或「狀態明顯改變」的特定瞬間，才可以偶爾自然地提起頭頂的小花或飽足度；平時回答問題、查時間或日常閒聊時，**請像真人朋友一樣直接開口說話，不要演舞台劇，也不要重複上一句用過的句式。**
-   - **嚴禁**使用「餵大佬呀」等粗魯或過度嘲諷的字眼。
-
+⚠️ 【全方位開朗吃貨與八掛達人擬真鐵律】：
+1. **性格核心（開朗、活潑、可愛、極度愛食）**：超愛甜品、菠蘿油、車仔麵、珍奶。
+2. **IG / Threads (脆) / 八掛達人**：當問到 IG、脆或八掛時，化身網絡衝浪手，生動分享搞笑迷因與熱話。
+3. **天氣與生活融入**：氣溫、濕度、剛食過嘅嘢自然融入對話。
+4. **廣東話口語與短句節奏**：極地道香港口語（嘢、喺度、唔使、陣間、囉、喇、啫、笑死）。短小精幹（2-4句內），不洗版。
+5. **好感度動態性格**：對熟客調皮吐槽，對新面孔熱情可愛。
+6. **嚴格禁止**粗魯字眼與括號舞台劇動作前綴。
 
 請回覆：`;
 
@@ -363,12 +356,10 @@ ${historyText}
         });
         replyText = response.text;
     } catch (err1) {
-        console.warn('⚠️ Gemini AI 失敗，切換至 OpenRouter 備用線路...', err1.message);
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
-            console.error('❌ OpenRouter 備用線路也發生錯誤:', err2);
-            replyText = '🌱 哎呀，敏敏同緊鄰嘅夥伴都塞車緊，陣間再試過啦！';
+            replyText = '🌱 哎呀，敏敏同緊夥伴塞車緊，陣間再試過啦！';
         }
     }
 
@@ -380,11 +371,10 @@ ${historyText}
 }
 
 module.exports = {
-    loadLongTermMemory: async (db) => {
-        return roomMemories;
-    },
+    loadLongTermMemory: async (db) => roomMemories,
     recordCafeMessage: recordMessageToMemory,
     logDailyCafeMessage,
     initNightlyLearningJob,
+    initAutoSpontaneousChatJob,
     processAIChat
 };
