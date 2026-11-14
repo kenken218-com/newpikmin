@@ -1,5 +1,5 @@
 // ==========================================
-// 🚀 終極乾淨入口 (index.js) [優化防重連版]
+// 🚀 終極乾淨入口 (index.js) [防斷線重連最新版]
 // ==========================================
 require('dotenv').config();
 const { default: makeWASocket, DisconnectReason, Browsers, initAuthCreds, proto } = require('@whiskeysockets/baileys');
@@ -21,6 +21,7 @@ const PORT = process.env.PORT || 3000;
 let latestQR = '';
 let isConnected = false;
 let isConnecting = false;
+let currentSock = null; // 👈 【新增】用來隨時指向最新活著的 WhatsApp 連線實例
 
 // 🛡️ 確保背景任務只啟動一次
 let isServicesStarted = false; 
@@ -69,16 +70,17 @@ async function connectToWhatsApp() {
             syncFullHistory: false
         });
 
+        // 👈 【關鍵】每次建立連線，立刻更新 currentSock 指標
+        currentSock = sock; 
+
         isConnecting = false;
         
-        // 🛡️ 只有第一次連線時，才啟動定時任務，避免斷線重連時重複註冊
+        // 🛡️ 傳入 getter 函式 (() => currentSock)，讓背景排程永遠取得最新連線
         if (!isServicesStarted) {
-            startDeletionChecker(sock, currentDb, () => isConnected);
-            startCronJobs(sock, ai);
+            startDeletionChecker(() => currentSock, currentDb, () => isConnected);
+            startCronJobs(() => currentSock, ai);
             startReminderChecker(sock, currentDb, () => isConnected);
             initNightlyLearningJob(sock, currentDb, ai);
-            
-            // 🟢 【新增】啟動敏敏的主動碎碎唸與隨機冒泡排程！
             initAutoSpontaneousChatJob(sock, currentDb, ai);
 
             isServicesStarted = true;
