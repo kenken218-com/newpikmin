@@ -2,6 +2,8 @@
 // 🚀 終極乾淨入口 (index.js) [全方位防斷線重連完整版]
 // ==========================================
 require('dotenv').config();
+process.env.TZ = 'Asia/Hong_Kong'; // 👈 【修正 1】強制鎖定香港時區，確保 Cron 定時任務準確
+
 const { default: makeWASocket, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
@@ -50,6 +52,8 @@ async function connectToWhatsApp() {
                 await currentDb.collection('reminders').createIndex({ remindAt: 1 });
                 await currentDb.collection('scheduled_deletions').createIndex({ deleteAt: 1 });
                 await currentDb.collection('cafe_daily_logs').createIndex({ date: 1 });
+                // 順手為 bot_flags 建立索引（用於早安/晚安排程防重複）
+                await currentDb.collection('bot_flags').createIndex({ _id: 1 });
                 console.log('✅ [資料庫] 索引建立/確認完成！');
             } catch (e) {
                 console.error('❌ 建立資料庫索引失敗:', e);
@@ -77,7 +81,10 @@ async function connectToWhatsApp() {
         // 🛡️ 傳入 getter 函式 (() => currentSock)，讓所有背景排程永遠取得最新連線
         if (!isServicesStarted) {
             startDeletionChecker(() => currentSock, currentDb, () => isConnected);
-            startCronJobs(() => currentSock, ai);
+            
+            // 👈 【修正 2】補上第三個參數 currentDb，讓早安排程可以抽籤防重複
+            startCronJobs(() => currentSock, ai, currentDb); 
+            
             startReminderChecker(() => currentSock, currentDb, () => isConnected);
             initNightlyLearningJob(() => currentSock, currentDb, ai);
             initAutoSpontaneousChatJob(() => currentSock, currentDb, ai);
@@ -131,7 +138,10 @@ async function connectToWhatsApp() {
                     const senderName = m.pushName || '成員';
 
                     if (remoteJid && messageContent) {
-                        logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent).catch(e => console.error(e));
+                        // 👈 【修正 3】補上解析 senderJid 並傳入，確保夜間學習能拿到正確的 ID
+                        const senderJid = m.key.participant || remoteJid;
+                        logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent, senderJid)
+                            .catch(e => console.error(e));
                     }
 
                     await handleIncomingMessage(sock, m, currentDb, ai, homeworkData, saveHomeworkData, backupHomeworkData);
