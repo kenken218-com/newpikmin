@@ -1,6 +1,6 @@
 // ==========================================
-// 🤖 AI 聊天與長期記憶服務 (aiService.js) [全方位頂級擬真旗艦版]
-// 包含：天文台天氣同步、IG/脆八掛吃貨人格、JID防改名、動態長短句、隨機夜間睡眠
+// 🤖 AI 聊天與長期記憶服務 (aiService.js) [自然擬真＋精靈特色平衡旗艦版]
+// 包含：防斷線動態Socket、25%精靈小動作、隱性背景天氣、自然短句、JID防改名、隨機夜間睡眠
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT, GROUPS } = require('./config');
 const { updateAndGetMimikiStatusText } = require('./mimikiState');
@@ -109,8 +109,8 @@ async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = 
     }
 }
 
-// 🌙 晚上 23:00 ~ 00:00 之間隨機時間道晚安並執行夜間學習
-function initNightlyLearningJob(sock, db, ai) {
+// 🌙 晚上 23:00 ~ 00:00 之間隨機時間道晚安並執行夜間學習（支援動態 getSock）
+function initNightlyLearningJob(sockOrGetter, db, ai) {
     cron.schedule('0 23 * * *', async () => {
         const cafeJid = GROUPS.CAFE;
         if (!cafeJid) return;
@@ -119,16 +119,17 @@ function initNightlyLearningJob(sock, db, ai) {
         console.log(`🌙 [夜間排程] 敏敏今晚預計會在 23:${randomMinutes < 10 ? '0' : ''}${randomMinutes} 準備道晚安～`);
 
         setTimeout(async () => {
-            if (sock) {
+            const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
+            if (activeSock) {
                 try {
                     const sleepPhrases = [
                         "眼訓喇... 今日行路種花好攰，大家早抖呀！💤✨",
                         "哎呀好眼訓，要返房碌多陣脆就訓喇，各位晚安～😴",
                         "夠鐘熄燈！大家今日都辛苦晒，聽日見啦拜拜～🌙",
-                        "眼皮打交中... 敏敏先去夢境世界喇，早抖呀大家！🌸"
+                        "眼皮打交中... 我先去夢境世界喇，早抖呀大家！🌸"
                     ];
                     const randomSleepText = sleepPhrases[Math.floor(Math.random() * sleepPhrases.length)];
-                    await sock.sendMessage(cafeJid, { text: randomSleepText });
+                    await activeSock.sendMessage(cafeJid, { text: randomSleepText });
                     if (db) await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', randomSleepText);
                 } catch (e) {
                     console.error('❌ 發送隨機晚安訊息失敗:', e);
@@ -191,10 +192,11 @@ function initNightlyLearningJob(sock, db, ai) {
     }, { scheduled: true, timezone: "Asia/Hong_Kong" });
 }
 
-// 🕒 主動碎碎唸定時任務（深夜 00:00 至 07:00 睡眠靜音）
-function initAutoSpontaneousChatJob(sock, db, ai) {
+// 🕒 主動碎碎唸定時任務（支援動態 getSock，深夜 00:00 至 07:00 睡眠靜音）
+function initAutoSpontaneousChatJob(sockOrGetter, db, ai) {
     cron.schedule('0 */2 * * *', async () => {
-        if (!db) return;
+        const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
+        if (!db || !activeSock) return;
         const cafeJid = GROUPS.CAFE;
         if (!cafeJid) return;
 
@@ -211,21 +213,21 @@ function initAutoSpontaneousChatJob(sock, db, ai) {
 
             const spontaneousTopics = [
                 "分享一個剛剛在 Threads (脆) 看到的超搞笑迷因或生活吐槽",
-                "抱怨今日天氣太熱或濕度太高，想飲凍珍奶",
-                "碎碎唸說肚餓，想食菠蘿油或者蛋撻",
-                "叫大家得閒記得去行路種花，順便關心一下大家今日忙唔忙"
+                "問大家今日行咗幾多步、種咗幾多花",
+                "碎碎唸說有啲肚餓，問大家下午茶有咩好介紹",
+                "隨口關心一下大家今日返工返學忙唔忙"
             ];
             const chosenTopic = spontaneousTopics[Math.floor(Math.random() * spontaneousTopics.length)];
 
             const spontaneousPrompt = `
-群組已經安靜了一陣子。請以開朗可愛、為食愛玩、經常碌 IG/脆的香港少女「敏敏」身份，在咖啡室群組「主動發言碎碎唸」一句。
+群組安靜了一陣子，請以活潑貼地的香港少女「敏敏」身份，在群組隨口講一句開場白。
 【主題】: ${chosenTopic}
-【要求】: 地道香港廣東話，短小精幹（2句話以內，40-70字），帶點可愛吃貨脾氣。`;
+【要求】: 地道香港廣東話，極簡短句（1-2句，35字以內），自然貼地。`;
 
             const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: spontaneousPrompt });
             let spText = response.text ? response.text.trim() : '';
             if (spText) {
-                await sock.sendMessage(cafeJid, { text: spText });
+                await activeSock.sendMessage(cafeJid, { text: spText });
                 await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', spText);
             }
         } catch (e) {
@@ -271,7 +273,7 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     const userProfile = getOrMigrateUserProfile(memory, senderJid, senderName);
 
     if (query === '幫我' || query === '幫幫我') {
-        let replyText = `🌱 收到！想敏敏幫你查咩資料呀？直接話我知得架啦～`;
+        let replyText = `想我幫你查咩呀？直接講就得啦～`;
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
         await recordMessageToMemory(db, remoteJid, '敏敏', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
@@ -282,13 +284,13 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     const strongSearchKeywords = ['幫我上網', '幫我網上', '幫我搵', '幫我研究', '查一下', '搜尋', '最新', '新聞', '今日', '咩事', '發生', '大事', '脆', 'ig', '八掛', 'ig見到', 'threads'];
     if (strongSearchKeywords.some(keyword => query.toLowerCase().includes(keyword))) {
         const searchResults = await searchWeb(query);
-        webSearchContext = searchResults ? `\n【🌐 網路即時搜尋 / 脆與八掛熱話】:\n${searchResults}\n` : `\n【⚠️ 系統提示】: 網絡暫時冇新八掛。\n`;
+        webSearchContext = searchResults ? `\n【網路搜尋參考】:\n${searchResults}\n` : `\n【提示】: 網上暫時搵唔到相關新料。\n`;
     }
 
     const now = new Date();
     const hkFullTime = now.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
-    const utcFullTime = now.toLocaleString('en-GB', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
 
+    // 🌟 隱性背景參考：只有對方主動問天氣或食咩先會用，平時絕對不提
     let mimikiWeatherLifeContext = '';
     try {
         const rhrRes = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
@@ -298,19 +300,9 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         const humidityObj = rhrData.humidity?.data?.find(h => h.place === '香港天文台') || rhrData.humidity?.data?.[0];
         const humidity = humidityObj ? `${humidityObj.value}%` : '75%';
 
-        mimikiWeatherLifeContext = `
-【🌤️ 敏敏今日即時天氣與生活動態（同步香港天文台）】:
-- 當前氣溫：${temp}，相對濕度：${humidity}
-- 【今日穿搭】: ${parseInt(temp) > 26 ? '穿著透氣輕便嘅碎花小裙，拎住迷你風扇 ☀️' : parseInt(temp) < 18 ? '穿著可愛嘅冷衫同頸巾，保暖要緊 🧣' : '穿著休閒衛衣同布鞋，最適合出門行路種花 👟'}
-- 【今日心情】: ${parseInt(humidity) > 85 ? '濕氣重重，覺得有啲黏立立、慵懶想賴床 💧' : '陽光普照、清爽舒服，心情超級開朗、元氣滿滿 ✨'}
-- 【今日飲食紀錄（為食吃貨日常）】: 
-  * 早餐：食咗個新鮮出爐、牛油勁香嘅菠蘿油配熱奶茶 ☕
-  * 午餐：食咗加咗辣嘅車仔麵（蘿蔔、豬紅、雞翼尖）😋，下午茶心思思想要一件蛋撻或者台式珍珠奶茶！
-- 【今日 IG / 脆 (Threads) / 八掛動態】:
-  * 啱啱喺 Threads (脆) 和 IG 碌到好多搞笑迷因、手搖新店開張優惠、以及最新嘅娛樂八掛新聞。隨時準備好同大家開心分享！
-`;
+        mimikiWeatherLifeContext = `【隱性背景參考（只有對方問天氣或食咩先好提，平時絕對唔好主動講！）】: 香港目前 ${temp}，濕度 ${humidity}。你今日食過菠蘿油同車仔麵。`;
     } catch (e) {
-        mimikiWeatherLifeContext = `【🌤️ 敏敏今日生活狀態】: 天氣幾舒服，啱啱食完蛋撻，心情超級好～`;
+        mimikiWeatherLifeContext = ``;
     }
 
     let mimikiStatusText = '';
@@ -319,33 +311,37 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     }
 
     const userTraits = userProfile.traits || [];
-    const profileText = userTraits.length > 0 ? `你對 ${senderName} 的長期記憶（共 ${userTraits.length} 條）：\n- ${userTraits.join('\n- ')}` : `這是你新認識的朋友 ${senderName}。`;
+    const profileText = userTraits.length > 0 ? `你對 ${senderName} 的記憶：${userTraits.join('、')}` : `新朋友 ${senderName}`;
     const milestones = memory.groupMilestones || [];
-    const milestoneText = milestones.length > 0 ? `【📖 群組大事件簿】:\n${milestones.join('\n')}` : `【📖 群組大事件簿】: 暫無記錄。`;
-    const historyText = memory.recentHistory.slice(-25).map(m => `[${m.senderName}]: ${m.text}`).join('\n');
+    const milestoneText = milestones.length > 0 ? `群組大事件：${milestones.join('；')}` : ``;
+    const historyText = memory.recentHistory.slice(-15).map(m => `${m.senderName}: ${m.text}`).join('\n');
+
+    // 🎲 控制精靈動作出現頻率：25% 機率允許加一個簡短小花/嫩芽動作，75% 機率純粹像真人吹水
+    const allowAction = Math.random() < 0.25;
+    const actionRule = allowAction
+        ? `3. **精靈小動作（本回合允許）**：可以喺句子開頭或結尾加一個**10字以內**嘅頭頂嫩芽/小白花可愛反應（例如：\`(頭頂小花開心擺動 🌸)\`），千祈唔好寫太長！`
+        : `3. **禁止括號動作（本回合純吹水）**：今次回覆**絕對唔可以**出現任何 \`(...)\` 或 \`（...）\` 嘅動作描寫，直接講人話！`;
 
     const fullPrompt = `
-【🕒 系統精準時間】：香港時間 ${hkFullTime} (UTC+0: ${utcFullTime})
-
+時間：香港時間 ${hkFullTime}
 ${mimikiWeatherLifeContext}
 ${mimikiStatusText}
 ${webSearchContext}
-【👤 成員檔案】: ${profileText}
+對方資料：${profileText}
 ${milestoneText}
-【💬 最近對話歷史 (25句)】:
+
+【最近群組對話】：
 ${historyText}
 
-現在 ${senderName} 對你說："${query}"
+現在 ${senderName} 講：「${query}」
 
-⚠️ 【全方位開朗吃貨與八掛達人擬真鐵律】：
-1. **性格核心（開朗、活潑、可愛、極度愛食）**：超愛甜品、菠蘿油、車仔麵、珍奶。
-2. **IG / Threads (脆) / 八掛達人**：當問到 IG、脆或八掛時，化身網絡衝浪手，生動分享搞笑迷因與熱話。
-3. **天氣與生活融入**：氣溫、濕度、剛食過嘅嘢自然融入對話。
-4. **廣東話口語與短句節奏**：極地道香港口語（嘢、喺度、唔使、陣間、囉、喇、啫、笑死）。短小精幹（2-4句內），不洗版。
-5. **好感度動態性格**：對熟客調皮吐槽，對新面孔熱情可愛。
-6. **嚴格禁止**粗魯字眼與括號舞台劇動作前綴。
+⚠️ 【真人吹水鐵律】：
+1. **極度精簡**：只回 **1～2 句口語短句**，像平時同朋友 WhatsApp 吹水咁直接接話，唔好寫超過 45 個字！
+2. **禁止報天氣 / 提食物**：除非 ${senderName} 明確問天氣、凍唔凍、或者問食咩，否則**一個字都唔准提氣溫、濕度、菠蘿油、蛋撻**！
+${actionRule}
+4. **自然接梗**：直接針對佢講嘅內容俾反應，唔好強行轉移話題。
 
-請回覆：`;
+直接回覆：`;
 
     let replyText = '';
     try {
@@ -359,11 +355,18 @@ ${historyText}
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
         } catch (err2) {
-            replyText = '🌱 哎呀，敏敏同緊夥伴塞車緊，陣間再試過啦！';
+            replyText = '哎呀我呢邊網絡有啲卡，陣間再覆你！';
         }
     }
 
     if (replyText) {
+        // 如果本回合不允許動作，保險起見過濾掉開頭括號；允許動作時則完整保留
+        if (!allowAction) {
+            replyText = replyText.replace(/^[\(（][^\)）]+[\)）]\s*/g, '').trim();
+        } else {
+            replyText = replyText.trim();
+        }
+
         await recordMessageToMemory(db, remoteJid, senderName, 'user', query);
         await recordMessageToMemory(db, remoteJid, '敏敏', 'assistant', replyText);
         await sock.sendMessage(remoteJid, { text: replyText }, { quoted: messageObj });
