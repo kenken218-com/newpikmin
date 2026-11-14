@@ -1,6 +1,6 @@
 // ==========================================
 // 🤖 AI 聊天與長期記憶服務 (aiService.js) [自然擬真＋精靈特色平衡旗艦版]
-// 包含：防斷線動態Socket、25%精靈小動作、隱性背景天氣、自然短句、JID防改名、隨機夜間睡眠
+// 包含：防斷線動態Socket、25%精靈小動作、隱性背景天氣、自然短句、JID防改名、隨機夜間睡眠(資料庫防重啟版)
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT, GROUPS } = require('./config');
 const { updateAndGetMimikiStatusText } = require('./mimikiState');
@@ -109,16 +109,48 @@ async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = 
     }
 }
 
-// 🌙 晚上 23:00 ~ 00:00 之間隨機時間道晚安並執行夜間學習（支援動態 getSock）
+// 🌙 晚上 23:00 ~ 23:59 之間隨機時間道晚安並執行夜間學習（雲端終極防斷線/防重啟版）
 function initNightlyLearningJob(sockOrGetter, db, ai) {
-    cron.schedule('0 23 * * *', async () => {
+    cron.schedule('*/5 23 * * *', async () => {
         const cafeJid = GROUPS.CAFE;
-        if (!cafeJid) return;
+        if (!cafeJid || !db) return;
 
-        const randomMinutes = Math.floor(Math.random() * 55); // 0~54分鐘隨機
-        console.log(`🌙 [夜間排程] 敏敏今晚預計會在 23:${randomMinutes < 10 ? '0' : ''}${randomMinutes} 準備道晚安～`);
+        const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
+        const doneFlagId = `night_done_${todayStr}`;
+        const randMinFlagId = `night_rand_${todayStr}`;
 
-        setTimeout(async () => {
+        try {
+            // 1. 檢查今天是否已發過晚安
+            const doneFlag = await db.collection('bot_flags').findOne({ _id: doneFlagId });
+            if (doneFlag) return; 
+
+            // 2. 如果還沒抽籤，先抽一個 0~55 之間的 5 的倍數作為目標分鐘
+            let randDoc = await db.collection('bot_flags').findOne({ _id: randMinFlagId });
+            if (!randDoc) {
+                const randomIndex = Math.floor(Math.random() * 12); // 0~11
+                const targetMinute = randomIndex * 5; // 0, 5, 10... 55
+                await db.collection('bot_flags').insertOne({ _id: randMinFlagId, targetMinute });
+                randDoc = { targetMinute };
+            }
+
+            // 3. 取得香港當前分鐘數
+            const now = new Date();
+            const hkTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
+            const currentMinute = hkTime.getMinutes();
+
+            // 4. 如果還沒到目標分鐘，且不是最後保底（55分），就繼續等
+            if (currentMinute < randDoc.targetMinute && currentMinute !== 55) return;
+
+            // 5. 搶佔標記（防多進程重複）
+            await db.collection('bot_flags').updateOne(
+                { _id: doneFlagId },
+                { $set: { executedAt: new Date() } },
+                { upsert: true }
+            );
+
+            console.log(`🌙 [晚安排程] 敏敏在 23:${String(currentMinute).padStart(2, '0')} 準備道晚安並開始夜間學習～`);
+
+            // 6. 發送晚安訊息
             const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
             if (activeSock) {
                 try {
@@ -130,65 +162,81 @@ function initNightlyLearningJob(sockOrGetter, db, ai) {
                     ];
                     const randomSleepText = sleepPhrases[Math.floor(Math.random() * sleepPhrases.length)];
                     await activeSock.sendMessage(cafeJid, { text: randomSleepText });
-                    if (db) await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', randomSleepText);
+                    await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', randomSleepText);
                 } catch (e) {
                     console.error('❌ 發送隨機晚安訊息失敗:', e);
                 }
+            } else {
+                console.warn('⚠️ [夜間排程] 無法發送晚安，因為 Socket 未連接。');
             }
 
-            if (!db) return;
-            try {
-                const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
-                const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
-                if (!logs || logs.length === 0) return;
+            // 7. 執行夜間學習（撈取當天日誌）
+            const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
+            if (!logs || logs.length === 0) return;
 
-                const roomsMap = {};
-                logs.forEach(l => {
-                    if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
-                    roomsMap[l.roomJid].push(l);
-                });
+            const roomsMap = {};
+            logs.forEach(l => {
+                if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
+                roomsMap[l.roomJid].push(l);
+            });
 
-                for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
-                    const memory = await getRoomMemory(db, remoteJid);
-                    if (!memory.groupMilestones) memory.groupMilestones = [];
+            for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
+                const memory = await getRoomMemory(db, remoteJid);
+                if (!memory.groupMilestones) memory.groupMilestones = [];
 
-                    const dailyChatText = roomLogs.map(l => {
-                        const idTag = l.senderJid || l.senderName;
-                        if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
-                        return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
-                    }).join('\n');
+                const dailyChatText = roomLogs.map(l => {
+                    const idTag = l.senderJid || l.senderName;
+                    if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
+                    return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
+                }).join('\n');
 
-                    const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據既有成員檔案與今日 (${todayStr}) 對話進行整合。格式純JSON回傳：
+                // 🛡️ 修正：把現有記憶和今日對話塞進 Prompt，讓 AI 真正學習
+                const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據以下資訊整合並更新成員檔案與群組里程碑。
+
+【現有成員檔案】:
+${JSON.stringify(memory.userProfiles || {}, null, 2)}
+
+【現有群組里程碑】:
+${JSON.stringify(memory.groupMilestones || [], null, 2)}
+
+【今日 (${todayStr}) 對話記錄】:
+${dailyChatText || '（今日無對話）'}
+
+【輸出規則】:
+- 只根據「今日對話記錄」新增或修正特徵，不要捏造。
+- profiles 的 key 必須是成員 ID（不是暱稱）。
+- 純 JSON 回傳，不要 markdown：
 {
   "profiles": { "成員ID": ["特徵1"] },
   "milestones": [ "[${todayStr}] 事件" ]
 }`;
-                    const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: learningPrompt });
-                    let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
-                    const parsedData = JSON.parse(analysisResult);
+                const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: learningPrompt });
+                let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
+                const parsedData = JSON.parse(analysisResult);
 
-                    if (parsedData.profiles) {
-                        for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
-                            if (!Array.isArray(traits)) continue;
-                            if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
-                                memory.userProfiles[memberId] = { name: memberId, traits: [] };
-                            }
-                            const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
-                            memory.userProfiles[memberId].traits = merged.slice(-25);
+                if (parsedData.profiles) {
+                    for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
+                        if (!Array.isArray(traits)) continue;
+                        if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
+                            memory.userProfiles[memberId] = { name: memberId, traits: [] };
                         }
+                        const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
+                        memory.userProfiles[memberId].traits = merged.slice(-25);
                     }
-                    if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
-                        memory.groupMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])].slice(-30);
-                    }
-                    await saveLongTermMemory(db, remoteJid);
                 }
-                await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
-                console.log('🌙 [夜間學習完成] 資料已成功歸納與瘦身！');
-            } catch (e) {
-                console.error('❌ 夜間學習發生錯誤:', e);
+                if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
+                    memory.groupMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])].slice(-30);
+                }
+                await saveLongTermMemory(db, remoteJid);
             }
-        }, randomMinutes * 60 * 1000);
+            
+            // 清空今日日誌
+            await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
+            console.log('🌙 [夜間學習完成] 資料已成功歸納與瘦身！');
 
+        } catch (e) {
+            console.error('❌ 夜間排程或學習發生錯誤:', e);
+        }
     }, { scheduled: true, timezone: "Asia/Hong_Kong" });
 }
 
