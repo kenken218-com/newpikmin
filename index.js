@@ -14,7 +14,7 @@ const { initDB, useMongoAuthState, loadHomeworkData, saveHomeworkData, backupHom
 const { handleIncomingMessage } = require('./messageHandler');
 const { startCronJobs, startDeletionChecker } = require('./schedulerService');
 const { startReminderChecker } = require('./reminderService');
-const { initNightlyLearningJob, logDailyCafeMessage } = require('./aiService');
+const { initNightlyLearningJob, initAutoSpontaneousChatJob, logDailyCafeMessage } = require('./aiService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -77,6 +77,10 @@ async function connectToWhatsApp() {
             startCronJobs(sock, ai);
             startReminderChecker(sock, currentDb, () => isConnected);
             initNightlyLearningJob(sock, currentDb, ai);
+            
+            // 🟢 【新增】啟動敏敏的主動碎碎唸與隨機冒泡排程！
+            initAutoSpontaneousChatJob(sock, currentDb, ai);
+
             isServicesStarted = true;
             console.log('⚙️ [系統] 所有背景定時任務已啟動！');
         }
@@ -126,7 +130,6 @@ async function connectToWhatsApp() {
                     const senderName = m.pushName || '成員';
 
                     if (remoteJid && messageContent) {
-                        // 注意：這裡建議加上 .catch 避免 log 失敗卡住主執行緒
                         logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent).catch(e => console.error(e));
                     }
 
