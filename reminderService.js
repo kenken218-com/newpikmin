@@ -1,5 +1,5 @@
 // ==========================================
-// ⏰ AI 智慧個人提醒服務 (reminderService.js) [正則強制防呆版]
+// ⏰ AI 智慧個人提醒服務 (reminderService.js) [正則強制防呆與防斷線升級版]
 // ==========================================
 const { GROUPS, PIKMIN_SYSTEM_PROMPT } = require('./config');
 const dbService = require('./dbService');
@@ -135,7 +135,7 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.5-flash-lite', // 使用你確認能用的模型
+            model: 'gemini-3.5-flash-lite',
             contents: prompt,
             config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
         });
@@ -155,7 +155,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
         let timeDesc = parsed?.timeDescription || '你指定的時間';
 
         // 🛡️ 【核心無敵防呆】用正則表達式強制抓取「數字+點」！
-        // 只要用戶打了數字，我們就不管 AI 算出甚麼鬼，自己算！
         const timeMatch = cleanQuery.match(/(\d{1,2})[點点:時时]\s*(\d{0,2})?[分]?/);
         if (timeMatch) {
             let hour = parseInt(timeMatch[1], 10);
@@ -183,7 +182,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             const dateString = `${targetYear}-${String(targetMonth+1).padStart(2,'0')}-${String(targetDay).padStart(2,'0')}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00+08:00`;
             remindAt = new Date(dateString);
 
-            // 如果算出來的時間比現在早，且用戶沒特別說是「今天/今晚」，自動順延到明天
             if (remindAt <= now) {
                 if (!/今日|今天|今晚/.test(cleanQuery)) {
                     remindAt = new Date(remindAt.getTime() + 24 * 3600000);
@@ -194,7 +192,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             }
         } 
         
-        // 如果正則抓不到時間（例如用戶只說「兩分鐘後」），或者直接依賴 AI 的解析
         if (!remindAt || isNaN(remindAt.getTime())) {
             if (cleanQuery.includes('兩分鐘') || cleanQuery.includes('2分鐘')) {
                 remindAt = new Date(now.getTime() + 2 * 60 * 1000);
@@ -210,7 +207,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             }
         }
 
-        // 最終檢查
         if (!remindAt || isNaN(remindAt.getTime())) {
             await sock.sendMessage(remoteJid, { 
                 text: `⚠️ 哎呀！小管家聽唔太明時間～\n請試下咁講：\`!提醒我 聽朝7點起身\` 或 \`!提醒我 今晚11點加步數\`` 
@@ -218,7 +214,6 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
             return true;
         }
 
-        // 美化時間格式
         const parts = new Intl.DateTimeFormat('zh-HK', {
             timeZone: 'Asia/Hong_Kong', year: 'numeric', month: 'numeric', day: 'numeric',
             hour: '2-digit', minute: '2-digit', hour12: false
@@ -250,15 +245,17 @@ async function handleReminderCommand(sock, m, remoteJid, senderJid, senderPhone,
     return true;
 }
 
-// 背景輪詢檢查器
+// ⏰ 背景輪詢檢查器（支援動態 getSock，防止斷線重連失效）
 let reminderCheckerInitialized = false;
 
-function startReminderChecker(sock, db, getIsConnected) {
+function startReminderChecker(sockOrGetter, db, getIsConnected) {
     if (reminderCheckerInitialized) return;
     reminderCheckerInitialized = true;
 
     setInterval(async () => {
-        if (!db || !getIsConnected()) return;
+        const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
+        if (!db || !getIsConnected() || !activeSock) return;
+        
         try {
             const now = new Date();
             const collection = db.collection('reminders');
@@ -268,7 +265,7 @@ function startReminderChecker(sock, db, getIsConnected) {
                 try {
                     const mentionTarget = rem.senderPhone ? `${rem.senderPhone}@s.whatsapp.net` : rem.senderJid;
                     const text = `⏰ @${mentionTarget.split('@')[0]} 時間到囉！\n你之前叫小管家提醒你：\n「${rem.message}」`;
-                    await sock.sendMessage(rem.remoteJid, { text, mentions: [mentionTarget] });
+                    await activeSock.sendMessage(rem.remoteJid, { text, mentions: [mentionTarget] });
                 } catch (err) {
                     console.error('❌ 發送提醒通知失敗:', err);
                 }
