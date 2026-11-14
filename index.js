@@ -1,8 +1,8 @@
 // ==========================================
-// 🚀 終極乾淨入口 (index.js) [防斷線重連最新版]
+// 🚀 終極乾淨入口 (index.js) [全方位防斷線重連完整版]
 // ==========================================
 require('dotenv').config();
-const { default: makeWASocket, DisconnectReason, Browsers, initAuthCreds, proto } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
 const express = require('express');
@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 let latestQR = '';
 let isConnected = false;
 let isConnecting = false;
-let currentSock = null; // 👈 【新增】用來隨時指向最新活著的 WhatsApp 連線實例
+let currentSock = null; // 👈 隨時指向最新活著的 WhatsApp 連線實例
 
 // 🛡️ 確保背景任務只啟動一次
 let isServicesStarted = false; 
@@ -70,18 +70,17 @@ async function connectToWhatsApp() {
             syncFullHistory: false
         });
 
-        // 👈 【關鍵】每次建立連線，立刻更新 currentSock 指標
+        // 👈 每次建立連線，立刻更新 currentSock 指標
         currentSock = sock; 
-
         isConnecting = false;
         
-        // 🛡️ 傳入 getter 函式 (() => currentSock)，讓背景排程永遠取得最新連線
+        // 🛡️ 傳入 getter 函式 (() => currentSock)，讓所有背景排程永遠取得最新連線
         if (!isServicesStarted) {
             startDeletionChecker(() => currentSock, currentDb, () => isConnected);
             startCronJobs(() => currentSock, ai);
-            startReminderChecker(sock, currentDb, () => isConnected);
-            initNightlyLearningJob(sock, currentDb, ai);
-            initAutoSpontaneousChatJob(sock, currentDb, ai);
+            startReminderChecker(() => currentSock, currentDb, () => isConnected);
+            initNightlyLearningJob(() => currentSock, currentDb, ai);
+            initAutoSpontaneousChatJob(() => currentSock, currentDb, ai);
 
             isServicesStarted = true;
             console.log('⚙️ [系統] 所有背景定時任務已啟動！');
