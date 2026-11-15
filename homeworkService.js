@@ -1,5 +1,5 @@
 // ==========================================
-// 🌸 花農群功課手冊服務 (homeworkService.js) [分段發送與嚴格防誤判完整版]
+// 🌸 花農群功課手冊服務 (homeworkService.js) [嚴格防誤判完整版]
 // ==========================================
 
 // 💡 本期開始時間由 homeworkData.__periodStart 決定（!整期重置 時寫入）
@@ -74,8 +74,8 @@ async function aiCheckHomeworkAdvanced(combinedMessageText, ai) {
 【審核判定規則】：
 1. 「SOCIAL_SHARE」：含有社群分享連結。
 2. 「FLOWER」：整體內容同時包含花名/品種描述 **且** 包含 3 個或以上經緯度座標。
-3. 「FORCE_OPEN_FULL」：整體內容含「強開」或白花名稱 **且** 包含 2 個或以上經緯度座標。
-4. 「FORCE_OPEN_NEED_MORE」：含強開或白花名稱，但僅有 1 個座標。
+3. 「FORCE_OPEN_FULL」：整體內容明確為「白花」名稱（如白葵、白玫瑰等），且包含 2 個或以上經緯度座標。注意：如果混入了非白色的花（如黃葵、紅花），即使有強開字眼和座標，也視為不合格！
+4. 「FORCE_OPEN_NEED_MORE」：含強開字眼，但座標少於 2 個，或者混入了非白色的花名。
 5. 「NEED_FLOWER_NAME」：有提供 2 個或以上座標，但整段訊息完全找不到任何花名或顏色。
 6. 「NONE」：純聊天、純打菇、或單純只有花名但**絕對沒有任何座標**的閒聊。
 
@@ -88,7 +88,7 @@ ${combinedMessageText}
 SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAME / NONE`;
 
         const response = await ai.models.generateContent({ 
-            model: 'gemini-3.5-flash-lite', 
+            model: 'gemini-3.5-flash-lite', // 若報錯請改為 gemini-2.0-flash 或 gemini-1.5-flash
             contents: prompt 
         });
         
@@ -104,6 +104,15 @@ SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAM
 
         // 🚨 強開的防呆：就算 AI 說可以，程式看到少於 2 個座標一樣退回！
         if (result.includes('FORCE_OPEN') || combinedMessageText.includes('強開')) {
+            // 🎨 顏色黑名單檢查：如果出現非白色的花（黃、紅、紫、藍、黑、粉、橘、綠），直接判定不合格！
+            const hasNonWhiteFlower = /黃|黄|紅|红|紫|藍|蓝|黑|粉|橘|橙|綠|绿/.test(combinedMessageText);
+            
+            if (hasNonWhiteFlower) {
+                console.log(`⛔ 攔截：發現非白色花朵關鍵字！`);
+                return 'force_open_need_more'; // 當作不合格，退回要求重發
+            }
+            
+            // 如果沒出現其他顏色，且座標 >= 2，才算強開成功
             return coordCount >= 2 ? 'force_open_full' : 'force_open_need_more';
         }
 
@@ -118,7 +127,7 @@ SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAM
     } catch (e) { 
         console.error('❌ AI 審核發生錯誤:', e);
         return null; 
-    } // 👈 這個 catch 剛剛被你刪掉了，現在補回來了！
+    }
 }
 
 module.exports = {
