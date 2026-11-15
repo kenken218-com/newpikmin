@@ -40,10 +40,14 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         } else if (pending.type === 'reset_all') {
             await backupHomeworkData();
             for (const name in homeworkData) {
+                // 👈 跳過 meta 欄位，避免把 __periodStart 當成員改寫
+                if (name.startsWith('__')) continue;
                 homeworkData[name].flower = false;
                 homeworkData[name].q1 = false;
                 homeworkData[name].q2 = false;
             }
+            // 👈 記錄本期起點，讓 !功課 的截止日期由此推算
+            homeworkData.__periodStart = new Date().toISOString();
             await saveHomeworkData(homeworkData);
             await sock.sendMessage(remoteJid, { text: `🔄 【確認執行】全新一期開始！已成功清空所有成員的本期功課記錄！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
         }
@@ -127,21 +131,35 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     }
 
     // 4. 刪人（改為需要二次確認）
+    // 👈 修正：改用與 !修改記錄 相同的 cleanStr 模糊匹配，避免全形/空白/標點造成「找不到」
     if (/^[!！]\s*(ai刪人|刪人)/.test(messageContent)) {
-        const name = messageContent.replace(/^[!！]\s*(ai刪人|刪人)/, '').trim();
-        if (!homeworkData[name]) {
-            await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` }, { quoted: m });
+        const rawName = messageContent.replace(/^[!！]\s*(ai刪人|刪人)/, '').trim();
+
+        const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
+        let matchedName = Object.keys(homeworkData).find(
+            n => !n.startsWith('__') && cleanStr(n) === cleanStr(rawName)
+        );
+
+        if (!matchedName) {
+            // 👈 找不到時，把目前名單印出來方便核對
+            const allNames = Object.keys(homeworkData)
+                .filter(n => !n.startsWith('__'))
+                .map(n => `「${n}」`)
+                .join('、');
+            await sock.sendMessage(remoteJid, {
+                text: `❌ 找不到名為「${rawName}」的成員！\n\n📋 目前名單：\n${allNames || '（空）'}\n\n請確認名字是否與上面完全一致。`
+            }, { quoted: m });
             return;
         }
 
         pendingActions[actionKey] = {
             type: 'delete_user',
-            target: name,
+            target: matchedName, // 👈 用匹配到的實際 key
             expiresAt: Date.now() + 30000
         };
 
         await sock.sendMessage(remoteJid, { 
-            text: `⚠️ 【安全確認】你正在嘗試移除成員「${name}」！\n請在 **30 秒內**回覆 **「!確認」** 以完成刪除操作。` 
+            text: `⚠️ 【安全確認】你正在嘗試移除成員「${matchedName}」！\n請在 **30 秒內**回覆 **「!確認」** 以完成刪除操作。` 
         }, { quoted: m });
         return;
     }
@@ -171,6 +189,9 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         let mentions = [];
 
         for (const [name, status] of Object.entries(homeworkData)) {
+            // 👈 跳過 meta 欄位，避免 __periodStart 被當成未完成成員催繳
+            if (name.startsWith('__')) continue;
+
             if (!status.flower && !status.q1 && !status.q2) {
                 if (status.id) {
                     mentions.push(status.id);
