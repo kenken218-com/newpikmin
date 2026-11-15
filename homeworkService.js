@@ -93,18 +93,27 @@ SOCIAL_SHARE / FLOWER / FORCE_OPEN_FULL / FORCE_OPEN_NEED_MORE / NEED_FLOWER_NAM
         });
         
         const result = response.text ? response.text.trim().toUpperCase() : 'NONE';
-        
-        console.log('🤖 AI 智慧審核結果:', result);
 
-        if (result.includes('SOCIAL_SHARE')) return 'social_share';
-        if (result.includes('FLOWER')) return 'flower';
-        if (result.includes('FORCE_OPEN_FULL')) return 'force_open_full';
-        if (result.includes('FORCE_OPEN_NEED_MORE')) return 'force_open_need_more';
-        if (result.includes('NEED_FLOWER_NAME')) return 'need_flower_name';
-        return null;
-    } catch (e) { 
-        console.error('❌ AI 審核發生錯誤:', e);
-        return null; 
+// 🧮 用正則表達式「硬性計算」這則訊息到底有幾個座標
+const coordMatches = combinedMessageText.match(/[-+]?\d{1,3}\.\d+,\s*[-+]?\d{1,3}\.\d+/g) || [];
+const coordCount = coordMatches.length;
+
+console.log(`🤖 AI 原始判斷: ${result} | 🧮 程式實際算出座標數: ${coordCount}`);
+
+if (result.includes('SOCIAL_SHARE')) return 'social_share';
+
+// 🚨 強開的防呆：就算 AI 說可以，程式看到少於 2 個座標一樣退回！
+if (result.includes('FORCE_OPEN') || combinedMessageText.includes('強開')) {
+    return coordCount >= 2 ? 'force_open_full' : 'force_open_need_more';
+}
+
+// 🚨 種花的防呆：順便修復之前 NEED_FLOWER_NAME 被誤判成 FLOWER 的 Bug
+if (result.includes('FLOWER') || result.includes('NEED_FLOWER_NAME')) {
+    if (result.includes('NEED_FLOWER_NAME')) return 'need_flower_name';
+    return coordCount >= 3 ? 'flower' : 'need_flower_name';
+}
+
+return null;
     }
 }
 
