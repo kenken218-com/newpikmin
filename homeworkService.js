@@ -2,13 +2,15 @@
 // 🌸 花農群功課手冊服務 (homeworkService.js) [分段發送與嚴格防誤判完整版]
 // ==========================================
 
-function getDynamicDeadlines() {
-    // 💡 設定以 10月31號為起點
-    const currentYear = new Date().getFullYear();
-    const now = new Date(currentYear, 9, 31); // 註：JavaScript 的月份從 0 開始，9 代表 10月
-    
-    const forceDeadlineDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const flowerDeadlineDate = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+// 💡 本期開始時間由 homeworkData.__periodStart 決定（!整期重置 時寫入）
+//    若沒有記錄，才回退到原本的 10/31 預設
+function getDynamicDeadlines(periodStartIso) {
+    const base = periodStartIso
+        ? new Date(periodStartIso)
+        : new Date(new Date().getFullYear(), 9, 31); // 舊預設：今年 10/31（月份從 0 開始，9 = 10月）
+
+    const forceDeadlineDate = new Date(base.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const flowerDeadlineDate = new Date(base.getTime() + 14 * 24 * 60 * 60 * 1000);
 
     const formatDate = (date) => {
         const day = date.getDate();
@@ -29,6 +31,9 @@ function generateHomeworkReport(homeworkData) {
     let completedList = [], pendingList = [];
 
     for (const [name, status] of Object.entries(homeworkData)) {
+        // 👈 跳過 meta 欄位（如 __periodStart），避免被當成成員
+        if (name.startsWith('__')) continue;
+
         let symbol = status.flower ? '🌸' : `${status.q1 ? '1️⃣' : ''}${status.q2 ? '2️⃣' : ''}`;
         if (status.flower || status.q1 || status.q2) {
             completedCount++;
@@ -39,7 +44,9 @@ function generateHomeworkReport(homeworkData) {
         }
     }
 
-    const deadlines = getDynamicDeadlines();
+    // 👈 從 homeworkData.__periodStart 讀本期起點
+    const deadlines = getDynamicDeadlines(homeworkData.__periodStart);
+
     let report = `╭──────────────────────╮\n│  🌱 花農群功課手冊公告  │\n╰──────────────────────╯\n\n`;
     report += `📜 【繳交規則 (二選一)】\n 1️⃣ 種花：每兩週分享一次 (10苗以上)\n 2️⃣ 強開：每週兩朵任意白花 (需附2個或以上座標)\n\n`;
     report += `⏳ 【本期自動截止時間】\n 🌸 Option 1 (種花) ── ${deadlines.flowerDeadline}\n 1️⃣ Option 2 (強開1) ── ${deadlines.force1Deadline}\n 2️⃣ Option 2 (強開2) ── ${deadlines.force2Deadline}\n─────────────────────────\n\n`;
