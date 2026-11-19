@@ -75,7 +75,11 @@ function getOrMigrateUserProfile(memory, senderJid, senderName) {
     if (!memory.userProfiles) memory.userProfiles = {};
 
     if (memory.userProfiles[senderJid] && typeof memory.userProfiles[senderJid] === 'object' && !Array.isArray(memory.userProfiles[senderJid])) {
-        memory.userProfiles[senderJid].name = senderName;
+        if (senderName) {
+            memory.userProfiles[senderJid].name = senderName;
+        } else if (!memory.userProfiles[senderJid].name) {
+            memory.userProfiles[senderJid].name = senderJid;
+        }
         if (!Array.isArray(memory.userProfiles[senderJid].traits)) {
             memory.userProfiles[senderJid].traits = [];
         }
@@ -89,7 +93,7 @@ function getOrMigrateUserProfile(memory, senderJid, senderName) {
     }
 
     memory.userProfiles[senderJid] = {
-        name: senderName,
+        name: senderName || senderJid,
         traits: inheritedTraits
     };
     return memory.userProfiles[senderJid];
@@ -161,7 +165,7 @@ async function generateNightGreetingText(ai) {
     }
 
     try {
-        const prompt = "生成一句充滿皮克敏 Bloom 風格、溫馨可愛且帶有地道香港廣東話口吻嘅晚安／早抖問候語。控制喺 1 至 2 句短句（約 15～45 字），唔好長篇大論。";
+        const prompt = "生成一句充滿皮克敏 Bloom 風格、溫馨可愛且帶有地道香港廣東話口吻嘅晚安／早抖問候語。稱呼群友必須用「皮友」或「大家」，絕對唔可以用「街坊」、「各位街坊」或「老友記」。控制喺 1 至 2 句短句（約 15～45 字），唔好長篇大論。";
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash-lite',
             contents: prompt,
@@ -251,8 +255,10 @@ function initNightlyLearningJob(sockOrGetter, db, ai, getIsConnected = null) {
                         const memory = await getRoomMemory(db, remoteJid);
                         if (!memory.groupMilestones) memory.groupMilestones = [];
 
+                        const latestNameByJid = {};
                         const dailyChatText = roomLogs.map(l => {
                             const idTag = l.senderJid || l.senderName;
+                            if (l.senderName) latestNameByJid[idTag] = l.senderName;
                             if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
                             return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
                         }).join('\n');
@@ -283,11 +289,21 @@ ${dailyChatText || '（今日無對話）'}
                         if (parsedData.profiles) {
                             for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
                                 if (!Array.isArray(traits)) continue;
-                                if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
-                                    memory.userProfiles[memberId] = { name: memberId, traits: [] };
-                                }
-                                const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
-                                memory.userProfiles[memberId].traits = merged.slice(-25);
+                                const existingProfile = memory.userProfiles[memberId];
+                                const preservedName =
+                                    (existingProfile && typeof existingProfile === 'object' && !Array.isArray(existingProfile) && existingProfile.name) ||
+                                    latestNameByJid[memberId] ||
+                                    memberId;
+                                const existingTraits =
+                                    (existingProfile && typeof existingProfile === 'object' && !Array.isArray(existingProfile) && Array.isArray(existingProfile.traits))
+                                        ? existingProfile.traits
+                                        : (Array.isArray(existingProfile) ? existingProfile : []);
+
+                                const merged = [...new Set([...existingTraits, ...traits])];
+                                memory.userProfiles[memberId] = {
+                                    name: preservedName,
+                                    traits: merged.slice(-25)
+                                };
                             }
                         }
                         if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
@@ -318,16 +334,16 @@ ${dailyChatText || '（今日無對話）'}
     }, { scheduled: true, timezone: "Asia/Hong_Kong" });
 }
 
-// 🕒 主動碎碎唸定時任務（支援動態 getSock，深夜 00:00 至 07:00 睡眠靜音）
+// 🕒 主動碎碎唸定時任務（支援動態 getSock，睡眠期間靜音）
 function initAutoSpontaneousChatJob(sockOrGetter, db, ai) {
-    cron.schedule('0 */2 * * *', async () => {
+    cron.schedule('0 */1 * * *', async () => {
         const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
         if (!db || !activeSock) return;
         const cafeJid = GROUPS.CAFE;
         if (!cafeJid) return;
 
-        const currentHour = parseInt(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }));
-        if (currentHour >= 0 && currentHour < 7) {
+        // 🛡️ 睡眠狀態（包含尚未道早安／已道晚安）一律靜音，唔偷跑
+        if (await isMimikiSleeping(db)) {
             return;
         }
 
@@ -521,7 +537,7 @@ ${historyText}
 現在 ${senderName} 講：「${query}」
 
 ⚠️ 【真人吹水鐵律】：
-0. **【核心身份】**：你的名字叫「敏敏」。如果群友叫你「馬哥」、「馬總」或者亂改你名，你必須自然、搞笑地糾正（例如：「我係敏敏呀，邊度嚟嘅馬哥？😂」），**絕對不能承認自己是馬哥**！
+0. **【核心身份】**：你的名字叫「敏敏」。如果群友叫你「馬哥」、「馬總」或者亂改你名，你必須自然、搞笑地糾正（例如：「我係敏敏呀，邊度嚟嘅馬哥？😂」），稱呼群友請用對方名字、皮友或大家，唔好叫『街坊』，**絕對不能承認自己是馬哥**！
 1. **極度精簡**：只回 **1～2 句口語短句**，像平時同朋友 WhatsApp 吹水咁直接接話，唔好寫超過 45 個字（餵食回饋可放寬至最多 2～3 句，約 60 字以內）！
 2. **禁止報天氣 / 提食物**：除非 ${senderName} 明確問天氣、凍唔凍、問食咩、或者正在餵食你，否則**一個字都唔准提氣溫、濕度、菠蘿油、蛋撻**！
 ${actionRule}
@@ -530,7 +546,7 @@ ${feedingRule}
 
 直接回覆：`;
 
-    let replyText = '';
+let replyText = '';
     try {
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash-lite',
@@ -538,10 +554,19 @@ ${feedingRule}
             config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
         });
         replyText = response.text;
+        if (!replyText || !replyText.trim()) {
+            throw new Error('Gemini 回傳空白內容');
+        }
     } catch (err1) {
+        console.warn(`⚠️ [AI 路由] 主 API (Gemini) 失敗 (${err1?.message || err1})，正切換至 OpenRouter 後備 API...`);
         try {
             replyText = await fetchOpenRouterGemmaFree(fullPrompt);
+            if (!replyText || !replyText.trim()) {
+                throw new Error('OpenRouter 回傳空白內容');
+            }
+            console.log('✅ [AI 路由] 後備 API (OpenRouter) 救援成功！');
         } catch (err2) {
+            console.error(`❌ [AI 路由] 後備 API (OpenRouter) 亦失敗 (${err2?.message || err2})，改用預設斷線提示。`);
             replyText = '哎呀我呢邊網絡有啲卡，陣間再覆你！';
         }
     }
