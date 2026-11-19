@@ -13,6 +13,7 @@ const qrcode = require('qrcode');
 const dbService = require('./dbService');
 const { initDB, useMongoAuthState, loadHomeworkData, saveHomeworkData, backupHomeworkData } = dbService;
 
+const { GROUPS } = require('./config');
 const { handleIncomingMessage } = require('./messageHandler');
 const { startCronJobs, startDeletionChecker } = require('./schedulerService');
 const { startReminderChecker } = require('./reminderService');
@@ -137,8 +138,8 @@ async function connectToWhatsApp() {
                     const messageContent = (msgObj.conversation || msgObj.extendedTextMessage?.text || msgObj.imageMessage?.caption || '').trim();
                     const senderName = m.pushName || '成員';
 
-                    if (remoteJid && messageContent) {
-                        // 👈 【修正 3】補上解析 senderJid 並傳入，確保夜間學習能拿到正確的 ID
+                    if (remoteJid && messageContent && remoteJid !== GROUPS.FLYER) {
+                        // 👈 【修正 3】補上解析 senderJid 並傳入，確保夜間學習能拿到正確的 ID，同時排除 FLYER 群座標洗版
                         const senderJid = m.key.participant || remoteJid;
                         logDailyCafeMessage(currentDb, remoteJid, senderName, messageContent, senderJid)
                             .catch(e => console.error(e));
@@ -159,3 +160,8 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp();
+```[cite: 4, 13, 14]
+
+---
+
+你想繼續處理下一件問題（例如 **第二件：遊戲流程未閉環與路由缺漏**），定係先測試呢部分？
