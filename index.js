@@ -86,7 +86,7 @@ async function connectToWhatsApp() {
             startCronJobs(() => currentSock, ai, currentDb); 
             
             startReminderChecker(() => currentSock, currentDb, () => isConnected);
-            initNightlyLearningJob(() => currentSock, currentDb, ai);
+            initNightlyLearningJob(() => currentSock, currentDb, ai, () => isConnected);
             initAutoSpontaneousChatJob(() => currentSock, currentDb, ai);
 
             isServicesStarted = true;
