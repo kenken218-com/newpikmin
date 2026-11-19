@@ -9,10 +9,11 @@ const userRecentMessages = {};
 const pendingActions = {};
 
 async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, messageContent, homeworkData, saveHomeworkData, backupHomeworkData, db, ai, scheduleMultipleDeletions) {
-    
+
     // 🛡️ 取得發言者的真實 WhatsApp ID 與電話
     const senderJid = m.key.participant || m.key.remoteJid;
     const actionKey = senderJid || senderPhone || senderName;
+    const msgGroupKey = senderJid || senderPhone || senderName;
 
     // 🛡️ 處理二次確認指令：!確認 (支援容錯空格)
     const isConfirmCmd = /^[!！]\s*確認$/.test(messageContent);
@@ -30,7 +31,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         if (pending.type === 'delete_user') {
             const name = pending.target;
             if (homeworkData[name]) {
-                await backupHomeworkData();
+                await backupHomeworkData(homeworkData);
                 delete homeworkData[name];
                 await saveHomeworkData(homeworkData);
                 await sock.sendMessage(remoteJid, { text: `🗑️ 【確認執行】已成功移除成員「${name}」！\n\n` + generateHomeworkReport(homeworkData) }, { quoted: m });
@@ -38,7 +39,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                 await sock.sendMessage(remoteJid, { text: `❌ 找不到名為「${name}」的成員！` }, { quoted: m });
             }
         } else if (pending.type === 'reset_all') {
-            await backupHomeworkData();
+            await backupHomeworkData(homeworkData);
             for (const name in homeworkData) {
                 // 👈 跳過 meta 欄位，避免把 __periodStart 當成員改寫
                 if (name.startsWith('__')) continue;
@@ -73,7 +74,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     if (/^[!！]\s*修改(記|紀)錄?/.test(messageContent)) {
         const rawParam = messageContent.replace(/^[!！]\s*修改(記|紀)錄?/, '').trim();
         const parts = rawParam.split(/\s+/);
-        
+
         if (parts.length < 2) {
             await sock.sendMessage(remoteJid, { text: `⚠️ 格式錯誤！請使用：\n!修改記錄 [成員名字] [狀態]\n(狀態可填: 🌸/種花, 1, 2, 未完成)` }, { quoted: m });
             return;
@@ -90,7 +91,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             return;
         }
 
-        await backupHomeworkData();
+        await backupHomeworkData(homeworkData);
 
         if (statusQuery.includes('🌸') || statusQuery.includes('種花') || statusQuery.includes('flower') || statusQuery === '花') {
             homeworkData[matchedName].flower = true;
@@ -122,7 +123,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     if (messageContent.startsWith('!ai加人') || messageContent.startsWith('！ai加人') || messageContent.startsWith('! ai加人') || messageContent.startsWith('！ ai加人')) {
         const name = messageContent.replace(/^[!！]\s*ai加人/, '').trim();
         if (name) {
-            await backupHomeworkData();
+            await backupHomeworkData(homeworkData);
             homeworkData[name] = { id: "", phone: "", flower: false, q1: false, q2: false };
             await saveHomeworkData(homeworkData);
             await sock.sendMessage(remoteJid, { text: `✅ 已成功新增成員「${name}」！\n\n` + generateHomeworkReport(homeworkData) });
@@ -158,8 +159,8 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             expiresAt: Date.now() + 30000
         };
 
-        await sock.sendMessage(remoteJid, { 
-            text: `⚠️ 【安全確認】你正在嘗試移除成員「${matchedName}」！\n請在 **30 秒內**回覆 **「!確認」** 以完成刪除操作。` 
+        await sock.sendMessage(remoteJid, {
+            text: `⚠️ 【安全確認】你正在嘗試移除成員「${matchedName}」！\n請在 **30 秒內**回覆 **「!確認」** 以完成刪除操作。`
         }, { quoted: m });
         return;
     }
@@ -167,12 +168,12 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
     // 5. 清除記錄
     if (/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/.test(messageContent)) {
         const name = messageContent.replace(/^[!！]\s*(ai清除記錄|ai清記錄|清除記錄|清記錄)/, '').trim();
-        
+
         const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
         let matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(name)) || name;
 
         if (homeworkData[matchedName]) {
-            await backupHomeworkData();
+            await backupHomeworkData(homeworkData);
             homeworkData[matchedName].flower = false;
             homeworkData[matchedName].q1 = false;
             homeworkData[matchedName].q2 = false;
@@ -227,54 +228,59 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
             expiresAt: Date.now() + 30000
         };
 
-        await sock.sendMessage(remoteJid, { 
-            text: `⚠️ 【高風險安全確認】你正在嘗試 **清空所有成員** 的本期所有功課記錄！\n請在 **30 秒內**回覆 **「!確認」** 才會正式執行重置。` 
+        await sock.sendMessage(remoteJid, {
+            text: `⚠️ 【高風險安全確認】你正在嘗試 **清空所有成員** 的本期所有功課記錄！\n請在 **30 秒內**回覆 **「!確認」** 才會正式執行重置。`
         }, { quoted: m });
         return;
     }
 
-    // 8. 座標與功課自動審核計時器（三層遞進式比對：ID ➔ 電話 ➔ 名字）
-    if (!userRecentMessages[senderName]) {
-        userRecentMessages[senderName] = { text: '', messageIds: [] };
+    // 8. 座標與功課自動審核計時器（按發送者唯一鍵累積，三層遞進式比對：ID ➔ 電話 ➔ 名字）
+    if (!userRecentMessages[msgGroupKey]) {
+        userRecentMessages[msgGroupKey] = { text: '', messageIds: [], senderName };
     }
-    userRecentMessages[senderName].text += '\n' + messageContent;
-    userRecentMessages[senderName].messageIds.push(m.key.id);
+    userRecentMessages[msgGroupKey].text += '\n' + messageContent;
+    userRecentMessages[msgGroupKey].messageIds.push(m.key.id);
+    userRecentMessages[msgGroupKey].senderName = senderName;
 
-    if (userRecentMessages[senderName].timer) clearTimeout(userRecentMessages[senderName].timer);
+    if (userRecentMessages[msgGroupKey].timer) clearTimeout(userRecentMessages[msgGroupKey].timer);
 
+    const activeKey = msgGroupKey;
     const currentSender = senderName;
     const currentJid = senderJid;
     const currentPhone = senderPhone;
-    const accumulatedText = userRecentMessages[currentSender].text;
-    const accumulatedMsgIds = [...userRecentMessages[currentSender].messageIds];
+    const accumulatedText = userRecentMessages[activeKey].text;
+    const accumulatedMsgIds = [...userRecentMessages[activeKey].messageIds];
 
-    userRecentMessages[currentSender].timer = setTimeout(async () => {
+    userRecentMessages[activeKey].timer = setTimeout(async () => {
         try {
             const result = await aiCheckHomeworkAdvanced(accumulatedText, ai);
-            
+
             const cleanStr = (str) => str.replace(/[^\w\u4e00-\u9fa5]/g, '').toLowerCase();
             let matchedName = null;
+            let isNewMember = false;
 
             if (currentJid) {
-                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].id === currentJid);
+                matchedName = Object.keys(homeworkData).find(n => !n.startsWith('__') && homeworkData[n].id === currentJid);
             }
             if (!matchedName && currentPhone) {
-                matchedName = Object.keys(homeworkData).find(n => homeworkData[n].phone === currentPhone);
+                matchedName = Object.keys(homeworkData).find(n => !n.startsWith('__') && homeworkData[n].phone === currentPhone);
             }
             if (!matchedName) {
-                matchedName = Object.keys(homeworkData).find(n => cleanStr(n) === cleanStr(currentSender));
+                matchedName = Object.keys(homeworkData).find(n => !n.startsWith('__') && cleanStr(n) === cleanStr(currentSender));
             }
 
             if (!matchedName) {
                 matchedName = currentSender;
+                isNewMember = true;
                 homeworkData[matchedName] = { id: currentJid || "", phone: currentPhone || "", flower: false, q1: false, q2: false };
+                await saveHomeworkData(homeworkData);
             } else {
                 if (matchedName !== currentSender && !homeworkData[currentSender]) {
-                    await backupHomeworkData();
-                    homeworkData[currentSender] = { 
-                        ...homeworkData[matchedName], 
-                        id: currentJid || homeworkData[matchedName].id, 
-                        phone: currentPhone || homeworkData[matchedName].phone 
+                    await backupHomeworkData(homeworkData);
+                    homeworkData[currentSender] = {
+                        ...homeworkData[matchedName],
+                        id: currentJid || homeworkData[matchedName].id,
+                        phone: currentPhone || homeworkData[matchedName].phone
                     };
                     delete homeworkData[matchedName];
                     matchedName = currentSender;
@@ -303,13 +309,13 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                     await sock.sendMessage(remoteJid, { text: `🌱 收到 ${currentSender} 嘅座標分享！請問哩度種嘅係咩花呀？（回覆花名即可記錄功課喔！）` });
                 }
             } else if (result === 'flower' || result === 'force_open_full') {
-                
+
                 // 💡 核心過濾：只有 result 是 'flower' 時才標記刪除；如果是 'force_open_full' (強開)，則維持 false（不刪除）！
                 if (result === 'flower') {
                     needScheduleDeletion = true;
                 }
 
-                await backupHomeworkData();
+                await backupHomeworkData(homeworkData);
                 if (result === 'flower') homeworkData[matchedName].flower = true;
                 else if (!homeworkData[matchedName].flower) {
                     if (!homeworkData[matchedName].q1) homeworkData[matchedName].q1 = true;
@@ -323,15 +329,16 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
                 } else {
                     await sock.sendMessage(remoteJid, { text: `✅ 收到 ${currentSender} 的功課！已更新手冊：\n\n` + generateHomeworkReport(homeworkData) });
                 }
-            } else {
-                const isAttemptingCommand = accumulatedText.trim().startsWith('!') || accumulatedText.trim().startsWith('！');
+            } else if (isNewMember) {
+                await saveHomeworkData(homeworkData);
+            }
 
-                if (!alreadyCompleted && isAttemptingCommand) {
-                    await sock.sendMessage(remoteJid, { 
-                        text: `🌱 哎呀 @${currentSender}，小助手睇唔太明哩個指令喎～\n如果是第一次交功課或唔知點樣打，可以隨時輸入 **!指令** 查看花農群操作手冊喔！`,
-                        mentions: [senderJid]
-                    }, { quoted: m });
-                }
+            const isAttemptingCommand = accumulatedText.trim().startsWith('!') || accumulatedText.trim().startsWith('！');
+            if (!result && !alreadyCompleted && isAttemptingCommand) {
+                await sock.sendMessage(remoteJid, {
+                    text: `🌱 哎呀 @${currentSender}，小助手睇唔太明哩個指令喎～\n如果是第一次交功課或唔知點樣打，可以隨時輸入 **!指令** 查看花農群操作手冊喔！`,
+                    mentions: [currentJid]
+                }, { quoted: m });
             }
 
             // 🧹 【條件式自動清理】只有種花或補座標訊息會被加入 50 分鐘刪除排程，強開訊息會保留不刪！
@@ -341,7 +348,7 @@ async function handleFlyerMessage(sock, m, remoteJid, senderPhone, senderName, m
         } catch (e) {
             console.error('❌ 處理功課計時器錯誤:', e);
         } finally {
-            delete userRecentMessages[currentSender];
+            delete userRecentMessages[activeKey];
         }
     }, 15000); // 15秒快速響應
 }
