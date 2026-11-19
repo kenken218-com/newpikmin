@@ -1,13 +1,23 @@
 // ==========================================
 // 🤖 AI 聊天與長期記憶服務 (aiService.js) [自然擬真＋精靈特色平衡旗艦版]
-// 包含：防斷線動態Socket、25%精靈小動作、隱性背景天氣、自然短句、JID防改名、隨機夜間睡眠(資料庫防重啟版)
+// 包含：防斷線動態Socket、25%精靈小動作、隱性背景天氣快取、自然短句、JID防改名、餵食回饋、睡眠模式、隨機夜間睡眠
 // ==========================================
 const { PIKMIN_SYSTEM_PROMPT, GROUPS } = require('./config');
 const { updateAndGetMimikiStatusText } = require('./mimikiState');
 const { tavily } = require('@tavily/core');
 const cron = require('node-cron');
 
-let roomMemories = {}; 
+let roomMemories = {};
+
+// 🌤️ 隱性背景天氣快取（20 分鐘有效，避免每次對話都即時打 API）
+let cachedWeatherContext = {
+    text: '',
+    fetchedAt: 0
+};
+const WEATHER_CACHE_TTL_MS = 20 * 60 * 1000;
+
+// 😴 睡眠狀態回覆冷卻記錄：key = remoteJid, value = timestamp
+const sleepNoticeCooldown = {};
 
 function extractSenderJid(messageObj, fallbackName) {
     if (!messageObj || !messageObj.key) return fallbackName;
@@ -24,8 +34,8 @@ async function getRoomMemory(db, remoteJid) {
                 const collection = db.collection('cafe_memory');
                 const doc = await collection.findOne({ _id: `memory_${remoteJid}` });
                 if (doc) {
-                    mem = { 
-                        recentHistory: doc.recentHistory || [], 
+                    mem = {
+                        recentHistory: doc.recentHistory || [],
                         userProfiles: doc.userProfiles || {},
                         groupMilestones: doc.groupMilestones || []
                     };
@@ -45,13 +55,13 @@ async function saveLongTermMemory(db, remoteJid) {
             const collection = db.collection('cafe_memory');
             await collection.updateOne(
                 { _id: `memory_${remoteJid}` },
-                { 
-                    $set: { 
-                        recentHistory: roomMemories[remoteJid].recentHistory, 
-                        userProfiles: roomMemories[remoteJid].userProfiles, 
+                {
+                    $set: {
+                        recentHistory: roomMemories[remoteJid].recentHistory,
+                        userProfiles: roomMemories[remoteJid].userProfiles,
                         groupMilestones: roomMemories[remoteJid].groupMilestones || [],
-                        updatedAt: new Date() 
-                    } 
+                        updatedAt: new Date()
+                    }
                 },
                 { upsert: true }
             );
@@ -94,6 +104,7 @@ async function recordMessageToMemory(db, remoteJid, senderName, role, text) {
 
 async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = null) {
     if (!db) return;
+    if (remoteJid === GROUPS.FLYER) return; // 🛡️ 排除花農群洗版與座標紀錄
     try {
         const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
         await db.collection('cafe_daily_logs').insertOne({
@@ -107,6 +118,34 @@ async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = 
     } catch (e) {
         console.error('❌ 記錄每日對話失敗:', e);
     }
+}
+
+// 🌙 判斷敏敏目前係咪處於睡眠狀態（已道晚安後 ～ 翌晨早安前）
+async function isMimikiSleeping(db) {
+    const now = new Date();
+    const hkTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
+    const hour = hkTime.getHours();
+    const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
+
+    if (hour === 23) {
+        if (!db) return false;
+        const nightDone = await db.collection('bot_flags').findOne({ _id: `night_done_${todayStr}` });
+        return Boolean(nightDone);
+    }
+
+    if (hour >= 0 && hour < 7) {
+        if (!db) return true;
+        const morningDone = await db.collection('bot_flags').findOne({ _id: `morning_done_${todayStr}` });
+        return !morningDone;
+    }
+
+    if (hour === 7) {
+        if (!db) return false;
+        const morningDone = await db.collection('bot_flags').findOne({ _id: `morning_done_${todayStr}` });
+        return !morningDone;
+    }
+
+    return false;
 }
 
 async function generateNightGreetingText(ai) {
@@ -149,34 +188,28 @@ function initNightlyLearningJob(sockOrGetter, db, ai, getIsConnected = null) {
         const randMinFlagId = `night_rand_${todayStr}`;
 
         try {
-            // 1. 檢查今天是否已發過晚安
             const doneFlag = await db.collection('bot_flags').findOne({ _id: doneFlagId });
             if (doneFlag) return;
 
-            // 2. 防止同一分鐘內併發重入（鎖定 10 分鐘）
             const existingLock = await db.collection('bot_flags').findOne({ _id: lockFlagId });
             if (existingLock?.lockedAt && (Date.now() - new Date(existingLock.lockedAt).getTime()) < 10 * 60 * 1000) {
                 return;
             }
 
-            // 3. 如果還沒抽籤，先抽一個 0~55 之間的 5 的倍數作為目標分鐘
             let randDoc = await db.collection('bot_flags').findOne({ _id: randMinFlagId });
             if (!randDoc) {
-                const randomIndex = Math.floor(Math.random() * 12); // 0~11
-                const targetMinute = randomIndex * 5; // 0, 5, 10... 55
+                const randomIndex = Math.floor(Math.random() * 12);
+                const targetMinute = randomIndex * 5;
                 await db.collection('bot_flags').insertOne({ _id: randMinFlagId, targetMinute });
                 randDoc = { targetMinute };
             }
 
-            // 4. 取得香港當前分鐘數
             const now = new Date();
             const hkTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
             const currentMinute = hkTime.getMinutes();
 
-            // 5. 如果還沒到目標分鐘，且不是最後保底（55分），就繼續等
             if (currentMinute < randDoc.targetMinute && currentMinute !== 55) return;
 
-            // 6. 檢查 Socket 與連線狀態，未準備好就先唔寫 doneFlag，留待下次重試
             const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
             const connected = typeof getIsConnected === 'function' ? getIsConnected() : true;
             if (!activeSock || !connected) {
@@ -192,7 +225,6 @@ function initNightlyLearningJob(sockOrGetter, db, ai, getIsConnected = null) {
 
             console.log(`🌙 [晚安排程] 敏敏在 23:${String(currentMinute).padStart(2, '0')} 準備道晚安並開始夜間學習～`);
 
-            // 7. 生成並發送晚安訊息，成功後先標記晚安已完成
             const sleepText = await generateNightGreetingText(ai);
             await activeSock.sendMessage(cafeJid, { text: sleepText });
             await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', sleepText);
@@ -203,11 +235,11 @@ function initNightlyLearningJob(sockOrGetter, db, ai, getIsConnected = null) {
                 { upsert: true }
             );
 
-            // 8. 執行夜間學習（撈取當天日誌）
             const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
             if (logs && logs.length > 0) {
                 const roomsMap = {};
                 logs.forEach(l => {
+                    if (l.roomJid === GROUPS.FLYER) return;
                     if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
                     roomsMap[l.roomJid].push(l);
                 });
@@ -296,7 +328,7 @@ function initAutoSpontaneousChatJob(sockOrGetter, db, ai) {
 
         const currentHour = parseInt(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }));
         if (currentHour >= 0 && currentHour < 7) {
-            return; // 深度睡眠期，不發言
+            return;
         }
 
         try {
@@ -344,25 +376,91 @@ async function searchWeb(query) {
     } catch (e) { return ''; }
 }
 
+// 🛡️ 加上嚴格空值與狀態檢查，防止 OpenRouter 異常結構拋出 TypeError
 async function fetchOpenRouterGemmaFree(fullPrompt) {
     const openRouterKey = process.env.OPENROUTER_API_KEY || "";
+    if (!openRouterKey) {
+        throw new Error("未設定 OPENROUTER_API_KEY");
+    }
+
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        headers: { "Authorization": `Bearer ${openRouterKey}`, "Content-Type": "application/json" },
+        headers: {
+            "Authorization": `Bearer ${openRouterKey}`,
+            "Content-Type": "application/json"
+        },
         body: JSON.stringify({
-            "model": "google/gemma-4-31b-it:free", 
+            "model": "google/gemma-4-31b-it:free",
             "messages": [
                 { "role": "system", "content": PIKMIN_SYSTEM_PROMPT },
                 { "role": "user", "content": fullPrompt }
             ]
         })
     });
+
+    if (!response.ok) {
+        throw new Error(`OpenRouter HTTP ${response.status}`);
+    }
+
     const data = await response.json();
+    if (!data || !Array.isArray(data.choices) || data.choices.length === 0) {
+        const errMsg = data?.error?.message || 'OpenRouter 回傳空白 choices';
+        throw new Error(errMsg);
+    }
+
     return data.choices[0]?.message?.content || '';
+}
+
+// 🌤️ 帶 20 分鐘快取嘅隱性背景天氣取得函式
+async function getCachedWeatherContext() {
+    const now = Date.now();
+    if (cachedWeatherContext.text && (now - cachedWeatherContext.fetchedAt) < WEATHER_CACHE_TTL_MS) {
+        return cachedWeatherContext.text;
+    }
+
+    try {
+        const rhrRes = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
+        if (!rhrRes.ok) {
+            throw new Error(`天文台 API HTTP ${rhrRes.status}`);
+        }
+        const rhrData = await rhrRes.json();
+        const tempObj = rhrData.temperature?.data?.find(t => t.place === '香港天文台') || rhrData.temperature?.data?.[0];
+        const temp = tempObj ? `${tempObj.value}°C` : '24°C';
+        const humidityObj = rhrData.humidity?.data?.[0];
+        const humidity = humidityObj ? `${humidityObj.value}%` : '75%';
+
+        const contextStr = `【隱性背景參考（只有對方問天氣或食咩先好提，平時絕對唔好主動講！）】: 香港目前 ${temp}，濕度 ${humidity}。你今日食過菠蘿油同車仔麵。`;
+        cachedWeatherContext = {
+            text: contextStr,
+            fetchedAt: now
+        };
+        return contextStr;
+    } catch (e) {
+        return cachedWeatherContext.text || '';
+    }
 }
 
 async function processAIChat(sock, remoteJid, senderName, query, messageObj, db, ai) {
     const senderJid = extractSenderJid(messageObj, senderName);
+
+    // 💤 睡眠模式攔截：已道晚安後至翌晨醒來前，自動提示敏敏睡覺中（唔消耗 AI 額度）
+    if (await isMimikiSleeping(db)) {
+        const lastNotice = sleepNoticeCooldown[remoteJid] || 0;
+        const nowTs = Date.now();
+
+        if (nowTs - lastNotice > 10 * 60 * 1000) {
+            sleepNoticeCooldown[remoteJid] = nowTs;
+            const sleepingReplies = [
+                `💤 【敏敏睡覺中】呼嚕…… 敏敏已經瞓著咗啦，頭頂粒嫩芽都收埋咗，聽朝 7 點幾醒咗再覆你～🌙`,
+                `😴 【敏敏睡覺中】Zzz… 今日行路種花好攰，敏敏已經熄燈訓覺喇，有咩聽朝再傾呀！✨`,
+                `🌙 【敏敏睡覺中】敏敏去咗夢境世界採花蜜啦～等聽朝太陽伯伯叫醒我再覆你喔！💤`
+            ];
+            const sleepNoticeText = sleepingReplies[Math.floor(Math.random() * sleepingReplies.length)];
+            await sock.sendMessage(remoteJid, { text: sleepNoticeText }, { quoted: messageObj });
+        }
+        return;
+    }
+
     const memory = await getRoomMemory(db, remoteJid);
     const userProfile = getOrMigrateUserProfile(memory, senderJid, senderName);
 
@@ -384,22 +482,12 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     const now = new Date();
     const hkFullTime = now.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: false });
 
-    // 🌟 隱性背景參考：只有對方主動問天氣或食咩先會用，平時絕對不提
-    let mimikiWeatherLifeContext = '';
-    try {
-        const rhrRes = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
-        const rhrData = await rhrRes.json();
-        const tempObj = rhrData.temperature?.data?.find(t => t.place === '香港天文台') || rhrData.temperature?.data?.[0];
-        const temp = tempObj ? `${tempObj.value}°C` : '24°C';
-        const humidityObj = rhrData.humidity?.data?.[0];
-        const humidity = humidityObj ? `${humidityObj.value}%` : '75%';
-
-        mimikiWeatherLifeContext = `【隱性背景參考（只有對方問天氣或食咩先好提，平時絕對唔好主動講！）】: 香港目前 ${temp}，濕度 ${humidity}。你今日食過菠蘿油同車仔麵。`;
-    } catch (e) {
-        mimikiWeatherLifeContext = ``;
-    }
+    // 🌟 帶快取嘅隱性背景參考
+    const mimikiWeatherLifeContext = await getCachedWeatherContext();
 
     let mimikiStatusText = '';
+    const isBeingFed = /(🍓|🍎|🍊|🍋|🍉|🍇|🍰|🍩|☕|🧋|精華|餵敏敏)/.test(query);
+
     if (remoteJid === GROUPS.CAFE) {
         mimikiStatusText = await updateAndGetMimikiStatusText(db, remoteJid, query, senderName, senderJid);
     }
@@ -410,11 +498,14 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
     const milestoneText = milestones.length > 0 ? `群組大事件：${milestones.join('；')}` : ``;
     const historyText = memory.recentHistory.slice(-15).map(m => `${m.senderName}: ${m.text}`).join('\n');
 
-    // 🎲 控制精靈動作出現頻率：25% 機率允許加一個簡短小花/嫩芽動作，75% 機率純粹像真人吹水
-    const allowAction = Math.random() < 0.25;
+    const allowAction = isBeingFed ? true : (Math.random() < 0.25);
     const actionRule = allowAction
         ? `3. **精靈小動作（本回合允許）**：可以喺句子開頭或結尾加一個**10字以內**嘅頭頂嫩芽/小白花可愛反應（例如：\`(頭頂小花開心擺動 🌸)\`），千祈唔好寫太長！`
         : `3. **禁止括號動作（本回合純吹水）**：今次回覆**絕對唔可以**出現任何 \`(...)\` 或 \`（...）\` 嘅動作描寫，直接講人話！`;
+
+    const feedingRule = isBeingFed
+        ? `5. **【餵食特別回饋】**：${senderName} 啱啱餵咗嘢食俾你！你一定要俾出明確、可愛又有生命力嘅吃貨反應（感謝 ${senderName}、形容好味／開胃，或者如果飽足度已達 100% 就撒嬌話飽到上心口／頭頂發光），並自然順帶提一提而家飽足度同好感度等級！`
+        : ``;
 
     const fullPrompt = `
 時間：香港時間 ${hkFullTime}
@@ -431,10 +522,11 @@ ${historyText}
 
 ⚠️ 【真人吹水鐵律】：
 0. **【核心身份】**：你的名字叫「敏敏」。如果群友叫你「馬哥」、「馬總」或者亂改你名，你必須自然、搞笑地糾正（例如：「我係敏敏呀，邊度嚟嘅馬哥？😂」），**絕對不能承認自己是馬哥**！
-1. **極度精簡**：只回 **1～2 句口語短句**，像平時同朋友 WhatsApp 吹水咁直接接話，唔好寫超過 45 個字！
-2. **禁止報天氣 / 提食物**：除非 ${senderName} 明確問天氣、凍唔凍、或者問食咩，否則**一個字都唔准提氣溫、濕度、菠蘿油、蛋撻**！
+1. **極度精簡**：只回 **1～2 句口語短句**，像平時同朋友 WhatsApp 吹水咁直接接話，唔好寫超過 45 個字（餵食回饋可放寬至最多 2～3 句，約 60 字以內）！
+2. **禁止報天氣 / 提食物**：除非 ${senderName} 明確問天氣、凍唔凍、問食咩、或者正在餵食你，否則**一個字都唔准提氣溫、濕度、菠蘿油、蛋撻**！
 ${actionRule}
 4. **自然接梗**：直接針對佢講嘅內容俾反應，唔好強行轉移話題。
+${feedingRule}
 
 直接回覆：`;
 
@@ -455,7 +547,6 @@ ${actionRule}
     }
 
     if (replyText) {
-        // 如果本回合不允許動作，保險起見過濾掉開頭括號；允許動作時則完整保留
         if (!allowAction) {
             replyText = replyText.replace(/^[\(（][^\)）]+[\)）]\s*/g, '').trim();
         } else {
