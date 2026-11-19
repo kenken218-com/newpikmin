@@ -109,22 +109,57 @@ async function logDailyCafeMessage(db, remoteJid, senderName, text, senderJid = 
     }
 }
 
+async function generateNightGreetingText(ai) {
+    const fallbackPhrases = [
+        "眼訓喇... 今日行路種花好攰，大家早抖呀！💤✨",
+        "哎呀好眼訓，要返房碌多陣脆就訓喇，各位晚安～😴",
+        "夠鐘熄燈！大家今日都辛苦晒，聽日見啦拜拜～🌙",
+        "眼皮打交中... 我先去夢境世界喇，早抖呀大家！🌸"
+    ];
+
+    if (!ai) {
+        return fallbackPhrases[Math.floor(Math.random() * fallbackPhrases.length)];
+    }
+
+    try {
+        const prompt = "生成一句充滿皮克敏 Bloom 風格、溫馨可愛且帶有地道香港廣東話口吻嘅晚安／早抖問候語。控制喺 1 至 2 句短句（約 15～45 字），唔好長篇大論。";
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash-lite',
+            contents: prompt,
+            config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
+        });
+        const aiText = response?.text ? response.text.trim() : '';
+        if (aiText) return aiText;
+    } catch (err) {
+        console.warn('⚠️ 晚安 AI 生成失敗，改用後備句庫:', err?.message || err);
+    }
+
+    return fallbackPhrases[Math.floor(Math.random() * fallbackPhrases.length)];
+}
+
 // 🌙 晚上 23:00 ~ 23:59 之間隨機時間道晚安並執行夜間學習（雲端終極防斷線/防重啟版）
-function initNightlyLearningJob(sockOrGetter, db, ai) {
+function initNightlyLearningJob(sockOrGetter, db, ai, getIsConnected = null) {
     cron.schedule('*/5 23 * * *', async () => {
         const cafeJid = GROUPS.CAFE;
         if (!cafeJid || !db) return;
 
         const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Hong_Kong' });
         const doneFlagId = `night_done_${todayStr}`;
+        const lockFlagId = `night_lock_${todayStr}`;
         const randMinFlagId = `night_rand_${todayStr}`;
 
         try {
             // 1. 檢查今天是否已發過晚安
             const doneFlag = await db.collection('bot_flags').findOne({ _id: doneFlagId });
-            if (doneFlag) return; 
+            if (doneFlag) return;
 
-            // 2. 如果還沒抽籤，先抽一個 0~55 之間的 5 的倍數作為目標分鐘
+            // 2. 防止同一分鐘內併發重入（鎖定 10 分鐘）
+            const existingLock = await db.collection('bot_flags').findOne({ _id: lockFlagId });
+            if (existingLock?.lockedAt && (Date.now() - new Date(existingLock.lockedAt).getTime()) < 10 * 60 * 1000) {
+                return;
+            }
+
+            // 3. 如果還沒抽籤，先抽一個 0~55 之間的 5 的倍數作為目標分鐘
             let randDoc = await db.collection('bot_flags').findOne({ _id: randMinFlagId });
             if (!randDoc) {
                 const randomIndex = Math.floor(Math.random() * 12); // 0~11
@@ -133,65 +168,64 @@ function initNightlyLearningJob(sockOrGetter, db, ai) {
                 randDoc = { targetMinute };
             }
 
-            // 3. 取得香港當前分鐘數
+            // 4. 取得香港當前分鐘數
             const now = new Date();
             const hkTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
             const currentMinute = hkTime.getMinutes();
 
-            // 4. 如果還沒到目標分鐘，且不是最後保底（55分），就繼續等
+            // 5. 如果還沒到目標分鐘，且不是最後保底（55分），就繼續等
             if (currentMinute < randDoc.targetMinute && currentMinute !== 55) return;
 
-            // 5. 搶佔標記（防多進程重複）
+            // 6. 檢查 Socket 與連線狀態，未準備好就先唔寫 doneFlag，留待下次重試
+            const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
+            const connected = typeof getIsConnected === 'function' ? getIsConnected() : true;
+            if (!activeSock || !connected) {
+                console.warn(`⚠️ [晚安排程] 23:${String(currentMinute).padStart(2, '0')} 尚未連線，稍後再試發送晚安。`);
+                return;
+            }
+
+            await db.collection('bot_flags').updateOne(
+                { _id: lockFlagId },
+                { $set: { lockedAt: new Date() } },
+                { upsert: true }
+            );
+
+            console.log(`🌙 [晚安排程] 敏敏在 23:${String(currentMinute).padStart(2, '0')} 準備道晚安並開始夜間學習～`);
+
+            // 7. 生成並發送晚安訊息，成功後先標記晚安已完成
+            const sleepText = await generateNightGreetingText(ai);
+            await activeSock.sendMessage(cafeJid, { text: sleepText });
+            await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', sleepText);
+
             await db.collection('bot_flags').updateOne(
                 { _id: doneFlagId },
                 { $set: { executedAt: new Date() } },
                 { upsert: true }
             );
 
-            console.log(`🌙 [晚安排程] 敏敏在 23:${String(currentMinute).padStart(2, '0')} 準備道晚安並開始夜間學習～`);
-
-            // 6. 發送晚安訊息
-            const activeSock = typeof sockOrGetter === 'function' ? sockOrGetter() : sockOrGetter;
-            if (activeSock) {
-                try {
-                    const sleepPhrases = [
-                        "眼訓喇... 今日行路種花好攰，大家早抖呀！💤✨",
-                        "哎呀好眼訓，要返房碌多陣脆就訓喇，各位晚安～😴",
-                        "夠鐘熄燈！大家今日都辛苦晒，聽日見啦拜拜～🌙",
-                        "眼皮打交中... 我先去夢境世界喇，早抖呀大家！🌸"
-                    ];
-                    const randomSleepText = sleepPhrases[Math.floor(Math.random() * sleepPhrases.length)];
-                    await activeSock.sendMessage(cafeJid, { text: randomSleepText });
-                    await recordMessageToMemory(db, cafeJid, '敏敏', 'assistant', randomSleepText);
-                } catch (e) {
-                    console.error('❌ 發送隨機晚安訊息失敗:', e);
-                }
-            } else {
-                console.warn('⚠️ [夜間排程] 無法發送晚安，因為 Socket 未連接。');
-            }
-
-            // 7. 執行夜間學習（撈取當天日誌）
+            // 8. 執行夜間學習（撈取當天日誌）
             const logs = await db.collection('cafe_daily_logs').find({ date: todayStr }).toArray();
-            if (!logs || logs.length === 0) return;
+            if (logs && logs.length > 0) {
+                const roomsMap = {};
+                logs.forEach(l => {
+                    if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
+                    roomsMap[l.roomJid].push(l);
+                });
 
-            const roomsMap = {};
-            logs.forEach(l => {
-                if (!roomsMap[l.roomJid]) roomsMap[l.roomJid] = [];
-                roomsMap[l.roomJid].push(l);
-            });
+                const processedRooms = [];
 
-            for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
-                const memory = await getRoomMemory(db, remoteJid);
-                if (!memory.groupMilestones) memory.groupMilestones = [];
+                for (const [remoteJid, roomLogs] of Object.entries(roomsMap)) {
+                    try {
+                        const memory = await getRoomMemory(db, remoteJid);
+                        if (!memory.groupMilestones) memory.groupMilestones = [];
 
-                const dailyChatText = roomLogs.map(l => {
-                    const idTag = l.senderJid || l.senderName;
-                    if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
-                    return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
-                }).join('\n');
+                        const dailyChatText = roomLogs.map(l => {
+                            const idTag = l.senderJid || l.senderName;
+                            if (l.senderJid) getOrMigrateUserProfile(memory, l.senderJid, l.senderName);
+                            return `[ID:${idTag} | 暱稱:${l.senderName}]: ${l.text}`;
+                        }).join('\n');
 
-                // 🛡️ 修正：把現有記憶和今日對話塞進 Prompt，讓 AI 真正學習
-                const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據以下資訊整合並更新成員檔案與群組里程碑。
+                        const learningPrompt = `你是一個群組智慧記憶整理 AI。請根據以下資訊整合並更新成員檔案與群組里程碑。
 
 【現有成員檔案】:
 ${JSON.stringify(memory.userProfiles || {}, null, 2)}
@@ -210,31 +244,43 @@ ${dailyChatText || '（今日無對話）'}
   "profiles": { "成員ID": ["特徵1"] },
   "milestones": [ "[${todayStr}] 事件" ]
 }`;
-                const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: learningPrompt });
-                let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
-                const parsedData = JSON.parse(analysisResult);
+                        const response = await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents: learningPrompt });
+                        let analysisResult = response.text ? response.text.trim().replace(/```json/g, '').replace(/```/g, '').trim() : '';
+                        const parsedData = JSON.parse(analysisResult);
 
-                if (parsedData.profiles) {
-                    for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
-                        if (!Array.isArray(traits)) continue;
-                        if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
-                            memory.userProfiles[memberId] = { name: memberId, traits: [] };
+                        if (parsedData.profiles) {
+                            for (const [memberId, traits] of Object.entries(parsedData.profiles)) {
+                                if (!Array.isArray(traits)) continue;
+                                if (!memory.userProfiles[memberId] || Array.isArray(memory.userProfiles[memberId])) {
+                                    memory.userProfiles[memberId] = { name: memberId, traits: [] };
+                                }
+                                const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
+                                memory.userProfiles[memberId].traits = merged.slice(-25);
+                            }
                         }
-                        const merged = [...new Set([...memory.userProfiles[memberId].traits, ...traits])];
-                        memory.userProfiles[memberId].traits = merged.slice(-25);
+                        if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
+                            memory.groupMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])].slice(-30);
+                        }
+                        await saveLongTermMemory(db, remoteJid);
+                        processedRooms.push(remoteJid);
+                    } catch (roomErr) {
+                        console.error(`❌ 夜間學習處理群組 [${remoteJid}] 失敗:`, roomErr);
                     }
                 }
-                if (Array.isArray(parsedData.milestones) && parsedData.milestones.length > 0) {
-                    memory.groupMilestones = [...new Set([...memory.groupMilestones, ...parsedData.milestones])].slice(-30);
+
+                if (processedRooms.length > 0) {
+                    await db.collection('cafe_daily_logs').deleteMany({
+                        date: todayStr,
+                        roomJid: { $in: processedRooms }
+                    });
                 }
-                await saveLongTermMemory(db, remoteJid);
             }
-            
-            // 清空今日日誌
-            await db.collection('cafe_daily_logs').deleteMany({ date: todayStr });
+
+            await db.collection('bot_flags').deleteOne({ _id: lockFlagId });
             console.log('🌙 [夜間學習完成] 資料已成功歸納與瘦身！');
 
         } catch (e) {
+            await db.collection('bot_flags').deleteOne({ _id: lockFlagId }).catch(() => {});
             console.error('❌ 夜間排程或學習發生錯誤:', e);
         }
     }, { scheduled: true, timezone: "Asia/Hong_Kong" });
@@ -345,7 +391,7 @@ async function processAIChat(sock, remoteJid, senderName, query, messageObj, db,
         const rhrData = await rhrRes.json();
         const tempObj = rhrData.temperature?.data?.find(t => t.place === '香港天文台') || rhrData.temperature?.data?.[0];
         const temp = tempObj ? `${tempObj.value}°C` : '24°C';
-        const humidityObj = rhrData.humidity?.data?.find(h => h.place === '香港天文台') || rhrData.humidity?.data?.[0];
+        const humidityObj = rhrData.humidity?.data?.[0];
         const humidity = humidityObj ? `${humidityObj.value}%` : '75%';
 
         mimikiWeatherLifeContext = `【隱性背景參考（只有對方問天氣或食咩先好提，平時絕對唔好主動講！）】: 香港目前 ${temp}，濕度 ${humidity}。你今日食過菠蘿油同車仔麵。`;
