@@ -160,8 +160,3 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp();
-```[cite: 4, 13, 14]
-
----
-
-你想繼續處理下一件問題（例如 **第二件：遊戲流程未閉環與路由缺漏**），定係先測試呢部分？
